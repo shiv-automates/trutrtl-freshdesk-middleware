@@ -82,10 +82,14 @@ export function parseAfterCall(body) {
       ? d.transcript
       : [];
 
+  const cust = d.customer || b.customer || {};
   return {
-    callId: firstOf(d.call_session_id, d.call_id, d.callId, b.call_session_id, b.id) || null,
-    phone: firstOf(d.phone, d.caller_number, d.from, d.from_number, d.customer_number) || null,
-    callerName: firstOf(d.caller_name, d.customer_name, d.name) || null,
+    callId: firstOf(d.call_session_id, d.call_id, d.callId, d.session_id, d.sessionId,
+      d.conversation_id, d.conversationId, d.id, b.call_session_id, b.call_id, b.id) || null,
+    phone: firstOf(d.phone, d.phone_number, d.caller_number, d.callerNumber, d.from, d.from_number,
+      d.fromNumber, d.customer_number, d.customerNumber, d.customer_phone, d.mobile,
+      cust.number, cust.phone, cust.phone_number, b.from, b.phone, b.phone_number, b.caller_number) || null,
+    callerName: firstOf(d.caller_name, d.callerName, d.customer_name, d.name, cust.name, b.caller_name) || null,
     summary: firstOf(d.summary, pca.summary, b.summary) || '',
     sentiment: firstOf(pca.sentiment, d.sentiment, b.sentiment) || 'neutral',
     disposition: firstOf(pca.disposition, d.disposition) || null,

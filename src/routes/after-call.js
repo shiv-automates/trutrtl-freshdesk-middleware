@@ -25,6 +25,13 @@ afterCallRouter.post('/ravan/after-call', async (req, res) => {
 
   const call = parseAfterCall(req.body);
 
+  // TEMP: log Ravan's actual payload shape (keys only, no PII) so we can map fields correctly.
+  logger.info({
+    bodyKeys: Object.keys(req.body || {}),
+    dataKeys: req.body && req.body.data ? Object.keys(req.body.data) : null,
+    gotPhone: !!call.phone, gotCallId: !!call.callId,
+  }, 'after-call received (raw shape)');
+
   // Dedup re-delivered webhooks.
   if (call.callId) {
     if (callDedup.has(`call:${call.callId}`)) {
@@ -64,7 +71,7 @@ afterCallRouter.post('/ravan/after-call', async (req, res) => {
     if (ticketId) {
       await fd.addNote(ticketId, noteBody, true);
       logger.info({ ticketId, callId: call.callId }, 'after-call note added');
-    } else {
+    } else if (call.phone) {
       const { dd, mm, yyyy } = (() => {
         const f = new Intl.DateTimeFormat('en-GB', {
           timeZone: config.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -86,6 +93,8 @@ afterCallRouter.post('/ravan/after-call', async (req, res) => {
       if (config.defaultGroupId) payload.group_id = config.defaultGroupId;
       const t = await fd.createTicket(payload);
       logger.info({ ticketId: t?.id, callId: call.callId }, 'after-call ticket created');
+    } else {
+      logger.warn({ callId: call.callId }, 'after-call: no phone and no existing ticket — skipped (cannot create a ticket without a requester)');
     }
   } catch (err) {
     logger.error({ err: err?.message, callId: call.callId }, 'after-call processing failed (already 200-acked)');

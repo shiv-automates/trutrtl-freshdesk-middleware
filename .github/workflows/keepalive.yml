@@ -1,0 +1,15 @@
+name: keep-alive
+# Pings the Render free service every 5 minutes so it never spins down
+# (free Render web services sleep after ~15 min idle, causing 30-60s cold starts
+# that blow past the voice agent's 8s function timeout). Public repos get free,
+# unlimited GitHub Actions minutes. For true production, upgrade Render to Starter.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: curl -fsS --max-time 60 https://trutrtl-freshdesk-middleware.onrender.com/health || true
