@@ -6,11 +6,14 @@ import { logger } from '../lib/logger.js';
 import { requireBearer } from '../lib/auth.js';
 import * as fd from '../lib/freshdesk.js';
 import { unwrapParams } from '../lib/ravan.js';
-import { mapProduct } from '../lib/product-map.js';
+import { mapProduct, mapCategory } from '../lib/product-map.js';
+import { mapPlatform } from '../lib/platform-map.js';
 import { requiredCustomFields } from '../lib/ticket-fields.js';
 import { toStorage, tenDigit } from '../lib/phone.js';
 import { registerDedup } from '../lib/stores.js';
 import { normalizeKey } from '../lib/idempotency.js';
+import * as whapi from '../lib/whapi.js';
+import { buildDocRequestMessage } from '../lib/whatsapp-message.js';
 
 export const registerComplaintRouter = Router();
 
@@ -122,6 +125,26 @@ registerComplaintRouter.post('/freshdesk/register-complaint', requireBearer, asy
       );
     } catch (e) {
       logger.warn({ err: e?.message, id }, 'addNote (awaiting docs) failed — ticket still created');
+    }
+
+    // Proactively WhatsApp the customer the document request (per-product instructions + review offer).
+    // Best-effort: never fail the registration if WhatsApp is down or disabled.
+    try {
+      const msg = buildDocRequestMessage({
+        name: p.name,
+        complaintNumber: id,
+        productCategory: mapCategory(p.product),
+        platform: mapPlatform(p.platform),
+        installed: p.installed,
+      });
+      const r = await whapi.sendText(p.phone_number, msg);
+      if (r?.ok) {
+        try {
+          await fd.addNote(id, 'Document-request WhatsApp sent to the customer (invoice + video + review-for-extension offer).', true);
+        } catch { /* note is informational only */ }
+      }
+    } catch (e) {
+      logger.warn({ err: e?.message, id }, 'whapi doc-request send failed (ticket still created)');
     }
 
     // TEST SAFETY: immediately close test tickets so live ops isn't disturbed.

@@ -49,6 +49,13 @@ export const config = {
   // Behaviour
   timezone: process.env.TIMEZONE || 'Asia/Kolkata',
   companyWhatsapp: process.env.COMPANY_WHATSAPP || '+91 95991 11390',
+
+  // WHAPI (whapi.cloud) — proactively WhatsApp the customer the document request after registering.
+  whapi: {
+    enabled: bool(process.env.WHAPI_ENABLED, false),
+    token: process.env.WHAPI_TOKEN || '',
+    baseUrl: process.env.WHAPI_BASE_URL || 'https://gate.whapi.cloud',
+  },
   idempotencyWindowMs: int(process.env.IDEMPOTENCY_WINDOW_MS, 300000),
   statusCacheTtlMs: int(process.env.STATUS_CACHE_TTL_MS, 30000),
   testAutoClose: bool(process.env.TEST_AUTO_CLOSE, false),

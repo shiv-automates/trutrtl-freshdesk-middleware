@@ -56,9 +56,10 @@ or `{ "found": false }` when nothing matches.
 **Headers:** same Authorization + Content-Type as above.
 
 **Description:**
-> Call this to register a new warranty complaint once you have the customer's name, phone, product,
-> platform, and the issue. It returns a complaint number — read it back digit by digit. Remind the
-> customer to send the invoice + issue video to WhatsApp +91 95991 11390.
+> Call this ONLY after you have collected — fresh in THIS call — the customer's name, phone, product,
+> platform, and the issue, read them ALL back, and the customer confirmed they're correct. NEVER reuse
+> details from a previous complaint or lookup. It returns a complaint number — read it back digit by
+> digit. (The system then automatically WhatsApps the customer exactly what to send.)
 
 **Parameters (JSON Schema)** — note the `enum`s match Freshdesk's dropdowns **exactly**:
 ```json
