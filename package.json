@@ -1,0 +1,23 @@
+{
+  "name": "trutrtl-freshdesk-middleware",
+  "version": "1.0.0",
+  "description": "Middleware connecting a Ravan/Agni voice agent to Freshdesk for live mid-call complaint lookup + registration.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "pino-pretty": "^11.3.0"
+  }
+}

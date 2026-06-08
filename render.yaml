@@ -1,0 +1,50 @@
+# Render blueprint — deploy with "New + → Blueprint" pointing at this repo,
+# or create a Web Service manually and copy the settings below.
+services:
+  - type: web
+    name: trutrtl-freshdesk-middleware
+    runtime: node
+    plan: starter            # $7/mo always-on. Use "free" to trial (sleeps after 15 min idle).
+    region: singapore        # closest to India for low latency to Freshdesk + Ravan
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: FRESHDESK_DOMAIN
+        sync: false
+      - key: FRESHDESK_API_KEY
+        sync: false          # set in the Render dashboard (secret)
+      - key: RAVAN_SHARED_SECRET
+        sync: false          # set in the Render dashboard (secret)
+      - key: COMPLAINT_ID_MODE
+        value: TICKET_ID
+      - key: CF_PLATFORM
+        value: cf_purchased_from
+      - key: CF_PRODUCT
+        value: cf_custom_tags
+      - key: CF_BRAND
+        value: cf_brand121540
+      - key: CF_BRAND_VALUE
+        value: truTRTL
+      - key: CF_PURCHASE_DATE
+        value: cf_order_date
+      - key: CF_ORDER_ID
+        value: cf_order_id
+      - key: CF_PIN
+        value: cf_pin_code
+      - key: CF_CITY
+        value: cf_city
+      - key: CF_STATE
+        value: cf_state
+      - key: CF_SERVICE_PARTNER
+        value: cf_given_to_service_partner
+      - key: DEFAULT_GROUP_ID
+        value: "81000089580"
+      - key: TIMEZONE
+        value: Asia/Kolkata
+      - key: COMPANY_WHATSAPP
+        value: "+91 95991 11390"
+      - key: TEST_AUTO_CLOSE
+        value: "false"
+      - key: NODE_ENV
+        value: production
