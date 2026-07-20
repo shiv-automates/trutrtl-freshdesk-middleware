@@ -27,6 +27,10 @@ import assert from 'node:assert/strict';
 const { config } = await import('../../src/lib/config.js');
 const { createApp } = await import('../../src/app.js');
 const { ORDER_DATE_NOT_CAPTURED } = await import('../../src/lib/ticket-fields.js');
+// register-complaint now answers the caller BEFORE its notes/WhatsApp/auto-close, exactly
+// as after-call has always done. drainBackgroundWork() awaits that trailing work so one
+// test's bookkeeping can never appear in the next test's request log.
+const { drainBackgroundWork } = await import('../../src/routes/register-complaint.js');
 
 const CF = config.cf;
 const BRAND = CF.brandValue;
@@ -105,7 +109,7 @@ before(() => {
   };
 });
 after(() => { globalThis.fetch = realFetch; });
-beforeEach(() => { calls = []; });
+beforeEach(async () => { await drainBackgroundWork(); calls = []; });
 
 // ── Harness ──────────────────────────────────────────────────────────────────
 
@@ -331,16 +335,28 @@ test('⭐ "induction stove" is refused too — the stove rule must not file it a
   assert.equal(created.custom_fields[CF.productSku], 'Shakti 2B');
 });
 
-test('⭐ Meesho / Jabong are refused rather than silently filed as a Website purchase', async () => {
-  for (const platform of ['Meesho', 'Jabong']) {
+test('⭐ Meesho / Jabong FILE — as themselves, never as a Website purchase', async () => {
+  // ⭐ 2026-07-20. These two used to be a terminal `unmapped_channel` refusal: the caller got
+  // no ticket and a promised callback, because cf_purchased_from had no value for them. The
+  // admin added both, so the refusal became the defect. What must NOT come back is the old
+  // §9.1 #8 behaviour of quietly filing them as 'Website' — that decides which return policy
+  // applies and which invoice we ask the customer for.
+  let i = 0;
+  for (const [platform, expected] of [
+    ['Meesho', 'Meesho'], ['Jabong', 'Jabong'],
+    ['bought it on the meesho website', 'Meesho'],
+  ]) {
+    await drainBackgroundWork();
     calls = [];
-    const r = await register({ ...VALID, phone_number: '9000000003', platform });
+    const r = await register({
+      ...VALID, phone_number: `900000030${i++}`, platform, issue_description: `blades wobble ${platform}`,
+    });
     assert.equal(r.status, 200);
-    assert.equal(r.body.error, true);
-    assert.equal(r.body.reason, 'unmapped_channel', `${platform}: reason`);
-    assert.ok(r.body.spoken_hint);
-    assert.equal(r.body.complaint_number, undefined);
-    assert.equal(posts('/api/v2/tickets').length, 0);
+    assert.equal(r.body.error, undefined, `${platform}: must not be an honest failure any more`);
+    assert.equal(r.body.complaint_number, '12345', `${platform}: the caller gets a real number`);
+    assert.equal(posts('/api/v2/tickets').length, 1, `${platform}: exactly one ticket`);
+    assert.equal(posts('/api/v2/tickets')[0].body.custom_fields[CF.platform], expected,
+      `${platform}: cf_purchased_from must be ${expected}, never Website`);
   }
 });
 
@@ -385,6 +401,7 @@ test('⭐ a genuine SECOND complaint is filed, and a true retry is deduped', asy
   assert.equal(first.body.complaint_number, '12345');
 
   // A real retry (identical params) → the same id, and no second ticket.
+  await drainBackgroundWork();
   calls = [];
   const retry = await register({ ...VALID, phone_number: phone });
   assert.equal(retry.body.complaint_number, '12345');
@@ -392,6 +409,7 @@ test('⭐ a genuine SECOND complaint is filed, and a true retry is deduped', asy
 
   // A DIFFERENT issue on the same phone+category → the old key (phone+product) handed
   // back the first ticket's id for a complaint it never filed. It must be filed.
+  await drainBackgroundWork();
   calls = [];
   const second = await register({ ...VALID, phone_number: phone, issue_description: 'The blade came loose' });
   assert.equal(posts('/api/v2/tickets').length, 1, 'a genuine second complaint must create a ticket');

@@ -33,6 +33,11 @@ import assert from 'node:assert/strict';
 
 const { config } = await import('../../src/lib/config.js');
 const { createApp } = await import('../../src/app.js');
+// ⭐ 2026-07-20. The notes and the WhatsApp send now run AFTER the response (they are what
+// made a successful create take 5.5s and Ravan retry it into a duplicate ticket), so a note
+// assertion that runs the instant register() resolves is racing the work it is checking.
+// drainBackgroundWork() awaits exactly that work — no sleeps, no flake.
+const { drainBackgroundWork } = await import('../../src/routes/register-complaint.js');
 
 const CF = config.cf;
 
@@ -64,7 +69,8 @@ before(() => {
   };
 });
 after(() => { globalThis.fetch = realFetch; });
-beforeEach(() => { calls = []; });
+// Drain first: a previous test's background bookkeeping must not land in this test's log.
+beforeEach(async () => { await drainBackgroundWork(); calls = []; });
 
 // ── Harness ──────────────────────────────────────────────────────────────────
 
@@ -163,6 +169,7 @@ test('⭐ a caller_id that disagrees still FILES, with both numbers and a verify
   assert.equal(r.body.complaint_number, '12345');
   assert.equal(created().length, 1);
 
+  await drainBackgroundWork(); // the notes are written after the caller has been answered
   const note = notes().find((b) => /different number/.test(b.body || ''));
   assert.ok(note, 'ops must get a private note about the disagreement');
   assert.equal(note.private, true, 'the note must never be customer-visible');
@@ -180,6 +187,7 @@ test('a caller_id that AGREES (different formatting) raises nothing', async () =
   const stated = freshPhone();
   const r = await register({ ...VALID, phone_number: stated, caller_id: `+91 ${stated}` });
   assert.equal(r.body.complaint_number, '12345');
+  await drainBackgroundWork(); // assert on the FULL note set, not on a half-written one
   assert.equal(notes().filter((b) => /different number/.test(b.body || '')).length, 0,
     'a formatting difference is not a disagreement');
   assert.ok(!/Numbers disagree/.test(created()[0].description));
@@ -189,10 +197,12 @@ test('an unusable caller_id is ignored rather than flagged as a disagreement', a
   // Withheld/blocked ANI and short codes carry no subscriber number. Flagging those would
   // put a "verify" note on ordinary tickets until ops stopped reading the note at all.
   for (const caller_id of ['anonymous', 'private', '', undefined, '1800']) {
+    await drainBackgroundWork();
     calls = [];
     const stated = freshPhone();
     const r = await register({ ...VALID, phone_number: stated, caller_id });
     assert.equal(r.body.complaint_number, '12345');
+    await drainBackgroundWork();
     assert.equal(notes().filter((b) => /different number/.test(b.body || '')).length, 0,
       `caller_id ${JSON.stringify(caller_id)} must not raise a mismatch`);
   }
@@ -325,11 +335,17 @@ test('missing_required still wins over invalid_phone when the number is absent',
 });
 
 test('the awaiting-documents note and the tag set are untouched', async () => {
-  await register({ ...VALID, phone_number: freshPhone() });
+  const r = await register({ ...VALID, phone_number: freshPhone() });
   const t = created()[0];
   assert.deepEqual([...t.tags].sort(), ['trutrtl', 'voice_agent', 'warranty']);
+
+  // ⭐ The note moved OFF the response path (it is bookkeeping, and awaiting it is what made
+  // a successful create take 5.5s), but it must still be written — the customer's invoice
+  // and issue video are tracked from it. Answer first, then write it.
+  assert.equal(r.body.complaint_number, '12345');
+  await drainBackgroundWork();
   assert.ok(notes().some((b) => /Awaiting invoice \+ issue video on WhatsApp/.test(b.body || '')),
-    'the pending-documents note must still be written');
+    'the pending-documents note must still be written, just no longer before the response');
 });
 
 test('register-complaint still requires the Bearer token', async () => {

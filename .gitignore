@@ -6,3 +6,5 @@ npm-debug.log*
 .DS_Store
 coverage/
 FRESHDESK_ACCOUNT_NOTES.md
+.env.bak*
+.env.*.bak

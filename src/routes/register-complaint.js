@@ -1,8 +1,23 @@
 // POST /freshdesk/register-complaint   (ENABLED — creates a real Freshdesk ticket)
 // Mirrors digiCART's existing intake shape so voice tickets flow into the same views.
 //
-// Flow: auth → unwrapParams → validate → phone → gate → dedup → build → create → note →
-//       (WhatsApp) → optional auto-close → 200 { complaint_number }
+// Flow: auth → unwrapParams → validate → phone → gate → dedup → build → create →
+//       remember the ticket → 200 { complaint_number }   ← the caller is answered HERE
+//       …then, in the background: note → (WhatsApp) → optional auto-close.
+//
+// ⭐⭐ 2026-07-20 — THE FIRST REAL CALL FILED TWO TICKETS (#12106 and #12107), and the
+//    reason it could is in the ordering above. This route used to `await` the private
+//    "awaiting invoice" note, the WHAPI send (6s timeout × 2 attempts of its own) and the
+//    TEST_AUTO_CLOSE update BEFORE answering — so a create that had ALREADY SUCCEEDED took
+//    5.5–5.7 seconds to come back, Ravan gave up on it as "Request timed out", and the
+//    caller heard dead air while the agent re-fired the call. Both attempts created a
+//    ticket. The ticket exists the moment createTicket() resolves; everything after it is
+//    bookkeeping, and bookkeeping must never be on the path a live caller waits on. The
+//    ack-then-work shape is the one routes/after-call.js has always used.
+//    ⚠ The dedup entry is still written BEFORE the response (see rememberTicket) — moving
+//    the work off the response path would otherwise have widened the very window that
+//    duplicated the ticket, because a retry arriving during the background work would find
+//    no dedup entry and create a second one.
 //
 // ⭐ M-2 PHONE VALIDATION (defect 2). routes/complaint-status.js has always called
 //    isValidIndianMobile(); this route never did — its only check was "non-empty". So a
@@ -31,7 +46,10 @@
 //    brand tree — got a ticket filed as a CEILING FAN with the fabricated model
 //    'Trutrtl-Smart-1200 MM', and Tara read back its number as if it were their complaint.
 //    A Meesho or Jabong purchase was silently filed as 'Website', moving the customer into
-//    truTRTL's own 7-day return flow and asking them for the wrong invoice.
+//    truTRTL's own 7-day return flow and asking them for the wrong invoice. (⭐ 2026-07-20:
+//    cf_purchased_from gained both values, so those two now file as themselves — see
+//    lib/platform-map.js. The rule that produced the defect is unchanged: never substitute
+//    a nearby legal value for the one the customer actually said.)
 //    Now: if we cannot file the complaint CORRECTLY we say so (200 + a stable `reason` +
 //    a line Tara can speak) and we create NOTHING. A wrong ticket is worse than no ticket,
 //    because it looks handled.
@@ -148,6 +166,92 @@ function issueKey(text) {
   return String(text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 120);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────
+// ⭐⭐ DEDUP (2026-07-20, the #12106/#12107 duplicate) — WHAT THE KEY MAY AND MAY NOT
+//    TOLERATE.
+//
+// The primary key stays phone + category + issue. It is the honest one: a caller with two
+// different broken products, or the same product with a second fault, gets two tickets
+// (§9.1 🟠 #5), and two different people can never collide because the phone separates
+// them.
+//
+// The duplicate on the first live call slipped past it because the AGENT FABRICATED the
+// phone number on its first attempt (9876543210) and sent the real one (8178490194) on the
+// retry, so the two attempts keyed differently. That is a prompt/enum fix — but the
+// middleware should not be one hallucinated field away from double-filing either.
+//
+// ⛔ REJECTED: keying on name + product + issue and letting the PHONE vary. It is the
+//    obvious fix and it is not safe. Names are not identifiers: "Rahul Sharma" + Ceiling
+//    Fans + "fan not working" is a combination two unrelated callers can genuinely produce
+//    inside any window, and Tara reads the returned number back as *their* complaint. The
+//    failure is silent and it is worse than the duplicate it prevents — the second caller
+//    has no ticket at all, believes they do, and a later status call passes the identity
+//    gate on the FIRST caller's ticket (the names match, that is the whole premise) and
+//    reads them someone else's case. A duplicate ticket is visible, contains only true
+//    statements, and ops merges it in seconds. We do not trade a visible, cheap failure
+//    for an invisible, expensive one.
+//
+// ✅ ADOPTED: tolerate a changed phone ONLY when the TELEPHONY layer says it is the same
+//    call. `caller_id` (the ANI) and any call/session id Ravan passes through come from the
+//    switch, not from the model — they are the one part of the payload the agent cannot
+//    invent, and they are unique to one conversation. Same call + same category + same
+//    issue, inside a short window, is a retry by construction: a caller cannot be two
+//    people. So the identity that failed us (a spoken number) is replaced by one that
+//    cannot fail the same way, without ever letting two genuine callers merge.
+//
+// If neither is present the behaviour is exactly what it was — phone-keyed only. This
+// widens dedup where we have proof, and nowhere else.
+//
+// Kept SHORT and independent of the 5-minute primary window: this key exists to absorb a
+// client-side timeout and its retry (seconds), not to cover a caller who rings back later
+// from a different phone about a genuinely new fault. Never longer than the primary window.
+const RETRY_JOIN_WINDOW_MS = Math.min(120000, config.idempotencyWindowMs);
+
+/**
+ * A stable identity for THIS CALL, supplied by the telephony platform rather than spoken.
+ * Returns null when there is nothing trustworthy — withheld ANI, a short code, no session
+ * id — and null simply means "phone-keyed only", never a weaker guess.
+ */
+function callIdentity(p) {
+  // A call/session id is the strongest form: unique to one conversation, and it cannot be
+  // confused with another caller even on a shared line. Read opportunistically — Ravan's
+  // register schema does not promise one today, and this must not require a wire change.
+  const session = [p.call_id, p.call_session_id, p.session_id, p.conversation_id]
+    .map((v) => String(v ?? '').trim()).find(Boolean);
+  if (session) return `call:${session.slice(0, 64)}`;
+  // Otherwise the ANI. tenDigit() yields '' for "anonymous"/"private"/short codes, which is
+  // the correct answer: those identify nobody, so they must not be allowed to merge anybody.
+  const ani = tenDigit(p.caller_id);
+  return ani ? `ani:${ani}` : null;
+}
+
+/**
+ * Every key this registration answers to. `primary` is authoritative; `secondary` (when we
+ * have a telephony identity) is the retry-tolerant one described above.
+ * ⚠ The ISSUE TEXT is in BOTH. It is the only field that distinguishes a retry from a
+ * second complaint, so no key may ever drop it.
+ */
+function dedupKeysFor(p, category) {
+  const issue = issueKey(p.issue_description);
+  const identity = callIdentity(p);
+  return {
+    primary: normalizeKey('reg', tenDigit(p.phone_number), category, issue),
+    secondary: identity ? normalizeKey('reg-call', identity, category, issue) : null,
+  };
+}
+
+/** The ticket already filed for either key, or undefined. */
+function lookupTicket({ primary, secondary }) {
+  return registerDedup.get(primary)
+    ?? (secondary ? registerDedup.get(secondary) : undefined);
+}
+
+/** Record the ticket under every key it answers to — the primary for the full window. */
+function rememberTicket({ primary, secondary }, id) {
+  registerDedup.set(primary, id);
+  if (secondary) registerDedup.set(secondary, id, RETRY_JOIN_WINDOW_MS);
+}
+
 /**
  * ⭐ The customer's information must not be lost.
  *
@@ -177,9 +281,11 @@ function logUnfiled(reason, p, category) {
     platform_said: String(p.platform || ''),
     issue: String(p.issue_description || '').slice(0, 500),
     order_id: p.order_id || null,
-    // ⭐ 2026-07-20 — carries MORE weight than it looks. On `unmapped_channel` (a legacy
-    // Meesho/Jabong buyer, the only kind left now that neither is on truTRTL's buy list)
-    // there is NO ticket, so this log line is the only place the warranty clock exists.
+    // ⭐ 2026-07-20 — carries MORE weight than it looks. On a TERMINAL refusal there is NO
+    // ticket, so this log line is the only place the warranty clock exists. (The
+    // `unmapped_channel` case that used to land here is now empty — Meesho and Jabong got
+    // real dropdown values and file normally — so in practice this is the
+    // category_unavailable path, and the reasoning is identical.)
     // A 2024–25 buyer with a ceiling fan is in cover until 2027, and ops cannot assess that
     // by hand without a purchase month/year. If it is null here, Tara did not ask — that is
     // a prompt/KB fix (§12.C capture list), not a code one.
@@ -334,14 +440,44 @@ function buildPayload(p, { category }) {
   return payload;
 }
 
-/** Everything after the gate: create → note → WhatsApp → optional auto-close. */
-async function doRegister(p, { category, dedupKey }) {
-  const ticket = await fd.createTicket(buildPayload(p, { category }));
-  const id = ticket?.id;
-  if (!id) throw new Error('no ticket id in response');
+// ── Background bookkeeping ───────────────────────────────────────────────────────────
+//
+// Everything that runs AFTER the caller has been told their complaint number. Each step is
+// independently try/caught: by the time any of this runs the ticket exists and the number
+// Tara read out is already true, so a failure here may be logged and must never be able to
+// change, delay or retract that answer.
+//
+// Exported ONLY so tests can await the work deterministically (and so a future graceful
+// shutdown can drain it before exiting). Nothing on the request path reads it.
+export const pendingBackgroundWork = new Set();
 
-  registerDedup.set(dedupKey, id);
+/** Await every background bookkeeping task currently in flight. Tests / shutdown only. */
+export async function drainBackgroundWork() {
+  while (pendingBackgroundWork.size) {
+    await Promise.allSettled([...pendingBackgroundWork]);
+  }
+}
 
+/**
+ * Run `fn` after the response, swallowing everything. An unhandled rejection escaping here
+ * would take the process down and with it every call in progress, so the catch is not
+ * defensive padding — it is the contract.
+ */
+function runInBackground(label, fn) {
+  const task = (async () => {
+    try {
+      await fn();
+    } catch (e) {
+      logger.warn({ err: e?.message, label }, 'register-complaint background work failed (ticket already created and answered)');
+    }
+  })();
+  pendingBackgroundWork.add(task);
+  task.then(() => pendingBackgroundWork.delete(task));
+  return task;
+}
+
+/** note → (caller-id note) → WhatsApp → optional auto-close. Never on the response path. */
+async function completeRegistration(id, p, category) {
   // Private note recording the pending documents.
   try {
     await fd.addNote(
@@ -404,6 +540,29 @@ async function doRegister(p, { category, dedupKey }) {
     }
   }
 
+  logger.info({ id }, 'register-complaint bookkeeping done');
+}
+
+/**
+ * The RESPONSE PATH, and deliberately nothing else: build → create → remember → answer.
+ *
+ * One Freshdesk call. Everything the old version awaited between the create and the
+ * response (two-plus notes, a WHAPI send with its own 6s × 2 budget, the auto-close PUT)
+ * now runs after this resolves, so a successful registration comes back in roughly one
+ * Freshdesk round-trip instead of the 5.5–5.7s that made Ravan time out and retry.
+ */
+async function doRegister(p, { category, dedupKeys }) {
+  const ticket = await fd.createTicket(buildPayload(p, { category }));
+  const id = ticket?.id;
+  if (!id) throw new Error('no ticket id in response');
+
+  // ⚠ BEFORE the answer leaves, and before a single line of bookkeeping. A retry that
+  // arrives while the background work is still running must find this entry and be handed
+  // the same number — that gap is exactly how #12106 and #12107 both got created.
+  rememberTicket(dedupKeys, id);
+
+  runInBackground('register bookkeeping', () => completeRegistration(id, p, category));
+
   logger.info({ id, category, test: config.testAutoClose }, 'register-complaint created');
   return { complaint_number: String(id) };
 }
@@ -413,6 +572,11 @@ async function doRegister(p, { category, dedupKey }) {
 // ticket. Here the in-flight promise is registered SYNCHRONOUSLY, in the same tick as the
 // check, so a concurrent duplicate joins the first create instead of racing it. Cleared on
 // settle: a failed attempt must never block a genuine retry.
+//
+// ⭐ 2026-07-20: it is keyed under EVERY key the request answers to (see dedupKeysFor), so
+// a retry that changed the phone number mid-call still joins the create already running
+// rather than starting a second one. This is the "reserve the slot before the create" half
+// of the duplicate fix; rememberTicket() is the after-the-create half.
 const inFlight = new Map(); // dedupKey -> Promise<{complaint_number}>
 
 registerComplaintRouter.post('/freshdesk/register-complaint', requireBearer, async (req, res) => {
@@ -473,16 +637,19 @@ registerComplaintRouter.post('/freshdesk/register-complaint', requireBearer, asy
   //                         decides which return policy applies and which invoice we ask
   //                         for; defaulting to it silently rewrites the customer's rights.
   //                         There is no "Other" option on cf_purchased_from, so we ask again.
-  //   unmapped_channel    — ⭐ Meesho and Jabong are LEGACY truTRTL channels (named on an
-  //                         older "Sold on" list) with no cf_purchased_from value at all.
-  //                         Asking again cannot fix it — there is no right answer to give —
-  //                         so it is terminal. ⭐ 2026-07-20: the client's current buy list
-  //                         (Amazon, Flipkart, Swiggy Instamart, Blinkit, Zepto, JioMart,
-  //                         BigBasket, truTRTL.com) does NOT include either, so this is
-  //                         permanent too and F-5 was withdrawn as written. Only legacy
-  //                         owners still in warranty land here. ⚠ When they do, whoever
-  //                         works the UNFILED log must capture the PURCHASE MONTH/YEAR by
-  //                         hand — there is no ticket to carry the warranty clock.
+  //   unmapped_channel    — a channel the caller names EXACTLY and cf_purchased_from has no
+  //                         value for. Asking again cannot fix it — there is no right answer
+  //                         to give — so it is terminal: callback, no ticket.
+  //                         ⭐ 2026-07-20 — CURRENTLY UNREACHABLE, and deliberately kept.
+  //                         Meesho and Jabong were its only two occupants; the desk admin
+  //                         added both to cf_purchased_from that day, so they now file as
+  //                         themselves (lib/platform-map.js) and refusing them would have
+  //                         become the defect — it was costing exactly the legacy in-warranty
+  //                         buyer it was written to protect. The branch stays wired for the
+  //                         next channel truTRTL sells on before the dropdown catches up.
+  //                         ⚠ Whenever it does fire, whoever works the UNFILED log must
+  //                         capture the PURCHASE MONTH/YEAR by hand — there is no ticket to
+  //                         carry the warranty clock.
   const check = validateComplaint(fieldInput(p, (p.order_id ?? '').toString().trim(), undefined));
   if (!check.ok) {
     const reason = REASON_BY_CODE[check.code] || 'freshdesk_error';
@@ -505,18 +672,27 @@ registerComplaintRouter.post('/freshdesk/register-complaint', requireBearer, asy
   // meant a caller's legitimate SECOND complaint inside the 5-minute window got the FIRST
   // ticket's id back — with no ticket, no note, no WhatsApp — while Tara read it out as
   // new. That is an honesty violation committed by the middleware, not the model.
-  const dedupKey = normalizeKey('reg', tenDigit(p.phone_number), category, issueKey(p.issue_description));
+  // ⭐ 2026-07-20: plus the retry-tolerant twin, keyed on the telephony call identity when
+  // there is one — see dedupKeysFor() for why that field and not the caller's name.
+  const dedupKeys = dedupKeysFor(p, category);
 
-  const existing = registerDedup.get(dedupKey);
+  const existing = lookupTicket(dedupKeys);
   if (existing) {
-    logger.info({ reused: true, id: existing }, 'register-complaint deduped (same phone+category+issue)');
+    logger.info({ reused: true, id: existing }, 'register-complaint deduped (same caller+category+issue)');
     return res.json({ complaint_number: String(existing) });
   }
 
-  let work = inFlight.get(dedupKey);
+  let work = inFlight.get(dedupKeys.primary)
+    || (dedupKeys.secondary ? inFlight.get(dedupKeys.secondary) : undefined);
   if (!work) {
-    work = doRegister(p, { category, dedupKey }).finally(() => inFlight.delete(dedupKey));
-    inFlight.set(dedupKey, work); // synchronous: no await between the get and the set
+    work = doRegister(p, { category, dedupKeys }).finally(() => {
+      inFlight.delete(dedupKeys.primary);
+      if (dedupKeys.secondary) inFlight.delete(dedupKeys.secondary);
+    });
+    // Synchronous: no await between the get and the set, under BOTH keys, so a near-
+    // simultaneous retry — with the phone corrected or not — joins this create.
+    inFlight.set(dedupKeys.primary, work);
+    if (dedupKeys.secondary) inFlight.set(dedupKeys.secondary, work);
   }
 
   try {

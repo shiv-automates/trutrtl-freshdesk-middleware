@@ -8,17 +8,35 @@
 // marketplace customer into truTRTL's own 7-day return flow and asked them for the wrong
 // invoice. requiredCustomFields() now throws instead; this file's job is simply to never
 // invent a value.
+//
+// ⭐ 2026-07-20. Meesho and Jabong now HAVE dropdown values, so the honest answer for them
+// changed: they file, as themselves. Never inventing a value and never refusing a value the
+// CRM does have are the same rule — the ticket must say where the customer actually bought
+// it, and 'Meesho' is now sayable in that field.
 
 // The live dropdown, verbatim and complete. THERE IS NO "Other" OPTION — an unmapped
 // platform has no correct value here, so it cannot be filed at all.
+//
+// ⭐ 2026-07-20 — TWELVE VALUES. The desk admin added 'Meesho' and 'Jabong' to
+// cf_purchased_from on 2026-07-20, which retires the whole unmapped-channel story below:
+// both file cleanly now, and refusing them would be the new defect. Read back from the
+// live field; keep this list byte-for-byte in the admin's order.
 export const PLATFORM_CHOICES = [
   'Amazon', 'Flipkart', 'Website', 'Zepto', 'Blinkit',
   'Myntra', 'CRED', 'JioMart', 'BigBasket', 'Swiggy',
+  'Meesho', 'Jabong',
 ];
 
 const ALIASES = [
   [/\bamazon\b/i, 'Amazon'],
   [/\bflipkart\b/i, 'Flipkart'],
+  // ⚠ Meesho and Jabong sit ABOVE the /website/ alias, and must stay there. "bought it on
+  // the Meesho website" names a marketplace and then says the word "website"; if the
+  // Website rule reached it first we would file a Meesho order as a truTRTL.com one — the
+  // §9.1 #8 defect this file exists to prevent, now with a legal value available to file
+  // instead. Naming the channel always beats a keyword that follows it.
+  [/\bmeesho\b/i, 'Meesho'],
+  [/\bjabong\b/i, 'Jabong'],
   [/\b(website|trutrtl|shopify|own\s*site|official\s*site)\b/i, 'Website'],
   [/\bzepto\b/i, 'Zepto'],
   [/\bblinkit\b/i, 'Blinkit'],
@@ -29,43 +47,33 @@ const ALIASES = [
   [/\b(swiggy|instamart)\b/i, 'Swiggy'],
 ];
 
-// LEGACY truTRTL channels with NO value on cf_purchased_from. An older channel list
-// (Knowledge Base §"Sold on", Master Brief:17) named Meesho and Jabong alongside
-// Amazon/Flipkart/Zepto/etc., but neither exists in the account's dropdown — so this is
-// not a missing alias we could add, it is a channel with no correct answer anywhere in
-// Freshdesk.
+// Real truTRTL channels that have NO value on cf_purchased_from — recognised precisely so
+// the route can decline HONESTLY (terminal: callback, no ticket) instead of dragging them
+// to the nearest legal-looking value, which on this dropdown is always 'Website' (§9.1 #8:
+// wrong return policy, wrong invoice requested).
 //
-// ⭐⭐ SETTLED 2026-07-20 — DO NOT "FIX" THIS BY ADDING THEM. Manish gave the current buy
-// list in writing: Amazon, Flipkart, Swiggy Instamart, Blinkit, Zepto, JioMart, BigBasket,
-// truTRTL.com. MEESHO AND JABONG ARE NOT ON IT. Every one of the eight that IS on it maps
-// cleanly to a live dropdown value today (Swiggy Instamart → 'Swiggy', truTRTL.com →
-// 'Website'), so the current buy list is 100% filable and needs no change here — asserted
-// in test/unit/helpers.test.js so a later edit to ALIASES cannot break it quietly.
-// That makes isUnmappedChannel() PERMANENT behaviour rather than a stopgap: these are not
-// channels we are waiting on a dropdown value for, they are channels truTRTL does not sell
-// on. The original F-5 ("please add Meesho and Jabong") has been withdrawn as written —
-// its justification was that they were current sales channels, and that is now false.
+// ⭐⭐ EMPTY SINCE 2026-07-20 — and that is the whole point of the change. Meesho and Jabong
+// were the only two entries, on the grounds that neither existed in the dropdown. The desk
+// admin added BOTH on 2026-07-20, so they are now ordinary aliases above and file exactly
+// like Amazon or Zepto. Keeping them here after that would have refused a complaint the CRM
+// can accept — the same defect as filing them as 'Website', just pointing the other way,
+// and it would have cost a 2024–25 Meesho buyer still inside warranty their ticket.
 //
-// ⚠ But the REGEX STAYS, and both still map to null. Two reasons, and neither is admin
-// backlog: (1) a 2024–25 Meesho buyer with a ceiling fan is inside a 2-year warranty until
-// 2027, so real callers still exist; (2) the alternative to recognising them is not "no
-// Meesho callers", it is `mapPlatform('Meesho')` falling through to the /website/ alias and
-// filing them as 'Website' — the exact §9.1 #8 defect (wrong return policy, wrong invoice
-// requested) that this file exists to prevent. Recognising a channel we cannot file is what
-// lets the route decline honestly.
+// ⚠ THE MECHANISM STAYS, deliberately, even with nothing in it. It is the only path that
+// distinguishes "we know exactly where you bought it and Freshdesk has nowhere to put that"
+// (terminal — asking again cannot help) from "we didn't understand you" (recoverable — ask
+// again). The next channel truTRTL sells on before the admin adds it lands here, and the
+// route, its reason code and its spoken line are all still wired. Deleting the seam would
+// mean re-deriving it under time pressure with a live caller on the line.
 //
-// Exposed separately so the route can distinguish "bought on Meesho, and we have nowhere
-// to file that" (terminal — callback, no ticket, and ops must capture the PURCHASE MONTH/
-// YEAR by hand because the warranty clock is not on any ticket) from "we didn't understand
-// you" (just ask the caller again). Both still map to null — neither may ever become
-// 'Website'. ⛔ And never ask for an 'Other' value instead: cf_purchased_from decides which
-// return policy applies and which invoice we request, so an 'Other' bucket would destroy
-// that signal for all five brands on this desk and re-open #8 in a new costume.
-const UNMAPPED_CHANNELS = /\b(meesho|jabong)\b/i;
+// ⛔ Whatever goes in here must still never map to 'Website', and never ask for an 'Other'
+// value: cf_purchased_from decides which return policy applies and which invoice we request,
+// so an 'Other' bucket would destroy that signal for every brand on this shared desk.
+const UNMAPPED_CHANNELS = [];
 
 /** True if the text names a real truTRTL channel that has no cf_purchased_from value. */
 export function isUnmappedChannel(text) {
-  return !!text && UNMAPPED_CHANNELS.test(String(text));
+  return !!text && UNMAPPED_CHANNELS.some((re) => re.test(String(text)));
 }
 
 export function mapPlatform(text) {
@@ -73,9 +81,11 @@ export function mapPlatform(text) {
   const t = String(text).trim();
   const exact = PLATFORM_CHOICES.find((c) => c.toLowerCase() === t.toLowerCase());
   if (exact) return exact;
-  // Unmapped channels FIRST, exactly as ELLE's fork does for offline retail: "bought it
-  // on the Meesho website" must not be dragged to 'Website' by the alias below. Naming a
-  // channel we cannot file is a harder fact than any keyword that follows it.
+  // Unmapped channels FIRST, exactly as ELLE's fork does for offline retail: naming a
+  // channel we cannot file is a harder fact than any keyword that follows it, so "bought it
+  // at the Croma store near the mall" must never be dragged to a value by a later alias.
+  // (The list is empty as of 2026-07-20 — Meesho and Jabong graduated to real values and
+  // are now ordinary aliases, placed above /website/ for exactly this reason.)
   if (isUnmappedChannel(t)) return null;
   for (const [re, choice] of ALIASES) if (re.test(t)) return choice;
   return null;
