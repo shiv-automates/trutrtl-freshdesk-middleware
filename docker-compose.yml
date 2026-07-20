@@ -1,0 +1,73 @@
+# truTRTL ↔ Freshdesk middleware — VPS stack.
+#
+# Mirrors the pattern already working on this box for Mixpost (infra/mixpost),
+# digidzn-os (infra/digidzn-os) and the ELLE Home middleware: a single container
+# that joins the EXTERNAL `edge` network purely for routing. It shares no data,
+# DB, or volume with any other service — the hard-isolation rule for this VPS.
+# This stack owns nothing but its own stateless container.
+#
+# ── How a request reaches this container (the live VPS front-door chain) ──
+#   client ──HTTPS──▶ CyberPanel / OpenLiteSpeed  (owns :80/:443 on the host —
+#                     teammate's; DO NOT TOUCH. Terminates TLS per-domain via
+#                     its own Let's Encrypt cert.)
+#          ──HTTP──▶ Traefik  (internal-only, 127.0.0.1:8081, plain HTTP,
+#                     Host()-router — set up in infra/traefik)
+#          ──HTTP──▶ this container (:3000), matched by the Host() label below.
+#
+# So TLS is CyberPanel's job, NOT Traefik's and NOT this container's.
+#
+# ✅ VERIFIED ON THE BOX 2026-07-18. The live Traefik runs with exactly ONE
+#    entrypoint and no TLS at all:
+#      --entrypoints.web.address=:80        (published as 127.0.0.1:8081)
+#      --providers.docker.network=edge
+#      --providers.docker.exposedbydefault=false
+#    …and every working container uses this identical 4-label set:
+#      traefik.enable=true
+#      traefik.http.routers.<name>.entrypoints=web
+#      traefik.http.routers.<name>.rule=Host(`<domain>`)
+#      traefik.http.services.<name>.loadbalancer.server.port=<port>
+#
+#    So: NO tls, NO certresolver, NO websecure — CyberPanel already terminated
+#    TLS upstream, and adding a tls label here would reference an entrypoint
+#    that does not exist. (The committed infra/traefik compose still shows the
+#    OLD 80/443+TLS Traefik — it is stale. The box is the truth.)
+#
+# ⚠ NAME COLLISION GUARD. ellehome-support.digidzn.com is ALREADY LIVE on this
+#   same box, from an identical stack. Every name below is deliberately distinct
+#   from its ellehome twin — container `trutrtl-middleware` (vs
+#   `ellehome-middleware`), image `trutrtl-freshdesk-middleware` (vs
+#   `ellehome-freshdesk-middleware`), Traefik router/service `trutrtl` (vs
+#   `ellehome`). Reusing an ellehome name would either fail to start or, worse,
+#   silently re-point a LIVE ELLE Home router at truTRTL's container. Do not
+#   rename any of them to match a copied snippet.
+
+services:
+  trutrtl-middleware:
+    build: .
+    image: trutrtl-freshdesk-middleware:latest
+    container_name: trutrtl-middleware
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.trutrtl.entrypoints=web
+      - traefik.http.routers.trutrtl.rule=Host(`${APP_DOMAIN}`)
+      - traefik.http.services.trutrtl.loadbalancer.server.port=3000
+    networks:
+      - edge
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+# `edge` is created once, outside any single stack's lifecycle
+# (`docker network create edge`), so `docker compose down` here never tears
+# down routing for Mixpost, digidzn-os or ELLE Home.
+networks:
+  edge:
+    external: true

@@ -112,11 +112,35 @@ export async function searchContacts(rawPhone) {
   return results[0] || null;
 }
 
-/** List a requester's tickets, newest first, with stats. */
+// ⭐ How far back the by-phone lookup can see. GET /tickets returns only tickets created in
+// the LAST 30 DAYS unless `updated_since` is supplied — which quietly made this the one
+// lookup that could not find the complaints the SLA feature exists for. Defect 20 is
+// literally about the ONE-MONTH-OLD complaint ("day 32 must not speak like day 2"), so a
+// caller who gives only a mobile number for a 32-day-old ticket came back found:false and
+// sla_breached could never fire on this path; the brand filter also ran over a truncated
+// list, so an older truTRTL ticket could be hidden behind a newer one from another brand.
+// Two years covers the 1-year warranty plus any realistic tail of follow-up.
+const REQUESTER_LOOKBACK_DAYS = 730;
+
+/** Freshdesk wants ISO 8601 without milliseconds (2024-07-18T00:00:00Z). */
+const lookbackISO = (days, now = new Date()) =>
+  new Date(now.getTime() - (days * 86400000)).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+/**
+ * List a requester's tickets, newest first, with stats.
+ *
+ * ⚠ PAGE 1 ONLY, deliberately: the account allows ~40 req/min shared with other automation,
+ * and a mid-call lookup cannot spend that budget paginating. Freshdesk's default page is 30
+ * tickets and they are ordered newest-first, so a requester with more than 30 tickets inside
+ * the lookback window loses the OLDEST ones. That is the right trade for a voice call (the
+ * complaint being asked about is nearly always recent), but it means this is not an
+ * exhaustive history — if a caller ever needs one, paginate here, not in the routes.
+ */
 export async function getTicketsByRequester(requesterId) {
   const r = await request('GET', '/tickets', {
     query: {
       requester_id: String(requesterId),
+      updated_since: lookbackISO(REQUESTER_LOOKBACK_DAYS),
       order_by: 'created_at',
       order_type: 'desc',
       include: 'stats',
@@ -163,4 +187,4 @@ export async function addNote(ticketId, body, isPrivate = true) {
   return r.data;
 }
 
-export const _internals = { BASE, request };
+export const _internals = { BASE, request, REQUESTER_LOOKBACK_DAYS, lookbackISO };

@@ -1,8 +1,13 @@
 // Bearer-token guard for incoming Ravan → middleware requests.
 import { config } from './config.js';
 
-/** Constant-time-ish string compare to avoid trivial timing leaks. */
-function safeEqual(a, b) {
+/**
+ * Constant-time-ish string compare to avoid trivial timing leaks.
+ * Exported so the after-call webhook guard uses the SAME compare as the Bearer guard
+ * (it used a plain `!==`, and only when the param happened to be present — see
+ * routes/after-call.js).
+ */
+export function safeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);

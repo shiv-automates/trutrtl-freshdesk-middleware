@@ -32,3 +32,24 @@ export function daysSincePhrase(days) {
   if (days === 1) return 'yesterday';
   return `${days} days ago`;
 }
+
+/**
+ * ⭐ M-4 (defect 17): the registration DATE, spoken — "18 June 2026", rendered in
+ * `timeZone` so it matches the customer's calendar, not the server's.
+ *
+ * "Complaint registered date nahi bata pati hai." formatStatus() handed Tara the integer
+ * days_since_registered and nothing else time-related, so answering "when did I register
+ * this?" meant doing calendar arithmetic mid-call from "32" — which she cannot reliably
+ * do and must never be asked to. We hand her the finished date instead.
+ *
+ * Returns null on a missing/unparseable timestamp (never a guessed date).
+ */
+export function formatDateSpoken(iso, timeZone = 'Asia/Kolkata') {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  // en-GB renders "18 June 2026" — day first, month in words, no ordinal suffix for TTS.
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone, day: 'numeric', month: 'long', year: 'numeric',
+  }).format(d);
+}

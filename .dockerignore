@@ -1,0 +1,11 @@
+node_modules
+npm-debug.log
+.env
+.env.*
+!.env.example
+.git
+.github
+_render-legacy
+*.md
+test
+.DS_Store

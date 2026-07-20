@@ -14,7 +14,7 @@ export const config = {
   // Freshdesk (outgoing) — set FRESHDESK_DOMAIN in the environment (kept out of the repo)
   freshdeskDomain: process.env.FRESHDESK_DOMAIN || '',
   freshdeskApiKey: process.env.FRESHDESK_API_KEY || '',
-  freshdeskTimeoutMs: int(process.env.FRESHDESK_TIMEOUT_MS, 5000),
+  freshdeskTimeoutMs: int(process.env.FRESHDESK_TIMEOUT_MS, 3500),
   freshdeskMaxRetries: int(process.env.FRESHDESK_MAX_RETRIES, 1),
 
   // Ravan (incoming)
@@ -65,6 +65,17 @@ export const config = {
   logLevel: process.env.LOG_LEVEL || 'info',
   nodeEnv: process.env.NODE_ENV || 'development',
 };
+
+// The Freshdesk TAG for our brand, derived ONCE from the configured brand value so that
+// nothing anywhere hardcodes it: 'truTRTL' → 'trutrtl'. Freshdesk tags cap at 32 chars.
+//
+// ⭐ Both routes that tag a ticket import THIS. routes/register-complaint.js used to carry
+// the literal 'trutrtl' in its tag list while routes/after-call.js derived its own copy, so
+// changing CF_BRAND_VALUE would have left the two routes tagging the SAME desk differently
+// — and every saved view, automation and report that filters on the brand tag would then
+// see only half of this brand's voice tickets. One derivation, one truth.
+export const brandTag = String(config.cf.brandValue || 'brand')
+  .toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32);
 
 // Freshdesk ticket field constants (fixed across accounts).
 export const FRESHDESK = {
