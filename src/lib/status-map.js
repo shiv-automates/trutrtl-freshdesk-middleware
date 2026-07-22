@@ -91,7 +91,13 @@ export const GROUP_SPEECH = {
   with_247: 'it has been assigned to one of our service centres',
   with_technicians: 'it is with a technician now',
   no_technician_found: 'we have not been able to arrange a technician in your area yet',
-  courier: 'a replacement has been dispatched to you',
+  // ⭐ C3 (2026-07-22, defect #14): the courier queue covers ANY courier movement — an
+  // outbound replacement, but ALSO an inbound refund/return pickup. Hardcoding "a
+  // replacement has been dispatched" told a REFUND customer (Adarsh Jain, 12010) the wrong
+  // thing. We have no field that distinguishes replacement/refund/repair (client Open
+  // Question 3), so we state only what is TRUE for the whole queue and offer the exact
+  // outcome via a person, rather than assert a specific one.
+  courier: 'it is with the courier team now — let me get you the exact courier update from someone who can see the full detail',
   no_comm_customer: 'we have been trying to reach you and have not had a reply yet',
   with_customer: 'it is open with you at the moment while the team sorts it out with you directly',
   // warranty / with_factory: the client's glossary does not define these. No phrase —
@@ -124,7 +130,11 @@ export function resolveQueue(rawGroupCustom, groupId) {
 // CLASSIFIER. The raw note is never returned, never quoted, never paraphrased.
 
 const CLOSURE_BY_QUEUE = {
-  courier: 'a replacement was dispatched to you',
+  // ⭐ C3: NOT "a replacement was dispatched" — a courier-closed case may be a refund or a
+  // return, not a replacement (defect #14). State the true, generic fact and route the
+  // specific outcome to a person. The precise disposition needs a Freshdesk field we don't
+  // have yet (client Open Question 3); until then we never assert replacement-vs-refund.
+  courier: 'it was closed after a courier movement — a colleague can confirm exactly what was sent or collected',
   no_comm_customer: "we closed it after we couldn't reach you for about fifteen days",
   no_technician_found: "we couldn't arrange a technician in your area",
 };

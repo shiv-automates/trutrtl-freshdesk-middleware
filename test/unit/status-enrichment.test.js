@@ -62,7 +62,7 @@ test('resolveQueue: the client\'s own F/G glossary, however ops typed it', () =>
 
   // Both service-centre queues mean the SAME thing to the customer (client's G column).
   assert.equal(resolveQueue('Rapid Era').spoken, resolveQueue('with 247').spoken);
-  assert.match(resolveQueue('Courier').spoken, /replacement/i);
+  assert.match(resolveQueue('Courier').spoken, /courier/i); // C3: courier queue no longer asserts 'replacement' (defect #14)
   assert.match(resolveQueue('with Technicians').spoken, /technician/i);
 
   // group_id fallback: cf_group_custom is a MIRROR dropdown and ops re-queue by moving
@@ -164,7 +164,7 @@ test('closureReason: runs ONLY on a resolved/closed ticket', () => {
 });
 
 test('⭐ closureReason: the queue at closure answers first, in the client\'s own meanings', () => {
-  assert.match(closureReason(5, { queue: 'courier' }), /replacement was dispatched/i);
+  assert.match(closureReason(5, { queue: 'courier' }), /courier movement/i); // C3: no longer asserts replacement
   assert.match(closureReason(5, { queue: 'no_comm_customer' }), /couldn't reach you.*fifteen days/i);
   assert.match(closureReason(5, { queue: 'no_technician_found' }), /couldn't arrange a technician/i);
 
@@ -178,7 +178,7 @@ test('⭐ closureReason: the queue at closure answers first, in the client\'s ow
   // last note happens to mention the product working.
   assert.match(
     closureReason(5, { queue: 'courier', noteText: 'Product started working. Hence closed' }),
-    /replacement was dispatched/i,
+    /courier movement/i, // C3: courier queue no longer claims 'replacement' (defect #14)
   );
 });
 
@@ -210,7 +210,7 @@ test('⭐ closureReason: the note CLASSIFIES, it is never quoted (safeLatestNote
   const out = asPriya(ticketOf({ status: 5, conversations: convos },
     { [config.cf.groupCustom]: 'Courier' }));
   assert.equal(out.latest_update, undefined, 'the internal note must not be read aloud');
-  assert.match(out.closure_reason, /replacement was dispatched/i);
+  assert.match(out.closure_reason, /courier movement/i); // C3
 });
 
 test('closureReason: no queue meaning and no matching note → null, not a guess', () => {
@@ -361,7 +361,7 @@ test('⭐ NONE of the M-4 enrichment escapes the identity gate', () => {
     assert.deepEqual(Object.keys(out).sort(), ['complaint_number', 'found', 'name_matches']);
 
     const blob = JSON.stringify(out);
-    for (const secret of ['Courier', 'Rapid Era', 'FA-88213', 'replacement', 'dispatched', 'June']) {
+    for (const secret of ['Courier', 'Rapid Era', 'FA-88213', 'courier movement', 'June']) {
       assert.ok(!blob.includes(secret), `M-4 field leaked past the identity gate: ${secret}`);
     }
   }
@@ -369,7 +369,7 @@ test('⭐ NONE of the M-4 enrichment escapes the identity gate', () => {
   // Same ticket, identity proved → the full picture.
   const ok = asPriya(loaded);
   assert.equal(ok.name_matches, true);
-  assert.match(ok.closure_reason, /replacement was dispatched/i);
+  assert.match(ok.closure_reason, /courier movement/i); // C3
   assert.equal(ok.service_partner_spoken, 'with our authorised service partner');
   assert.equal(ok.field_agent_ticket, 'FA-88213');
   assert.ok(ok.registered_on);

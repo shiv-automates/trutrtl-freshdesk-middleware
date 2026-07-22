@@ -192,6 +192,27 @@ test('⭐ by-phone: picks OUR ticket, never the newer cross-brand one on the sam
   assert.equal(r.body.complaint_number, '11914');
 });
 
+test('⭐ C1: the by-phone path discloses case detail on phone + brand, even with no / wrong name', async () => {
+  // The caller has proven possession of the registered mobile AND the brand filter has proven
+  // the ticket is truTRTL's, so phone + brand IS the identity. A by-phone lookup no longer needs
+  // a matching name to disclose the case (diagnosis §C1, defects 1/2/10); name_matches stays a
+  // soft signal. (Contrast the by-ID path below, where a wrong name still withholds everything.)
+  for (const body of [
+    { phone_number: '9876543210' },                                    // no name at all
+    { phone_number: '9876543210', caller_stated_name: 'Someone Else' }, // a non-matching name
+  ]) {
+    const r = await status(body);
+    assert.equal(r.body.found, true);
+    assert.equal(r.body.complaint_number, '11914', 'still OUR ticket, never MILTON #11915');
+    assert.equal(r.body.product, 'Ceiling Fan', 'case detail is disclosed on phone + brand');
+    assert.ok(r.body.status_label, 'the status is disclosed too');
+    assert.match(r.body.latest_update, /replacement is approved/);
+  }
+  // A matching (here fuzzy-lowercased) name still sets name_matches:true as a soft signal.
+  const matched = await status({ phone_number: '9876543210', caller_stated_name: 'priya' });
+  assert.equal(matched.body.name_matches, true);
+});
+
 test('⭐ the raw ops queue never crosses the wire, even to a caller who passed the gate', async () => {
   // #11916 sits in the 'Rapid Era' queue. The response is read by an LLM under a heading
   // that says "Tara reads this aloud", so the raw string was one RAG miss away from being
@@ -335,28 +356,24 @@ test('⭐ "induction stove" is refused too — the stove rule must not file it a
   assert.equal(created.custom_fields[CF.productSku], 'Shakti 2B');
 });
 
-test('⭐ Meesho / Jabong FILE — as themselves, never as a Website purchase', async () => {
-  // ⭐ 2026-07-20. These two used to be a terminal `unmapped_channel` refusal: the caller got
-  // no ticket and a promised callback, because cf_purchased_from had no value for them. The
-  // admin added both, so the refusal became the defect. What must NOT come back is the old
-  // §9.1 #8 behaviour of quietly filing them as 'Website' — that decides which return policy
-  // applies and which invoice we ask the customer for.
+test('⭐ Meesho / Jabong are refused honestly (C6 reversal) — no ticket, never a Website purchase', async () => {
+  // ⭐ C6 (2026-07-22 client reversal). The 2026-07-20 dropdown addition is undone: the client
+  // confirmed truTRTL is NOT on Meesho/Jabong, so a caller who names one is DECLINED terminally
+  // and called back — never given a fabricated number, and above all never quietly filed as
+  // 'Website' (§9.1 #8: that decides which return policy applies and which invoice we ask for).
   let i = 0;
-  for (const [platform, expected] of [
-    ['Meesho', 'Meesho'], ['Jabong', 'Jabong'],
-    ['bought it on the meesho website', 'Meesho'],
-  ]) {
+  for (const platform of ['Meesho', 'Jabong', 'bought it on the meesho website']) {
     await drainBackgroundWork();
     calls = [];
     const r = await register({
       ...VALID, phone_number: `900000030${i++}`, platform, issue_description: `blades wobble ${platform}`,
     });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.error, undefined, `${platform}: must not be an honest failure any more`);
-    assert.equal(r.body.complaint_number, '12345', `${platform}: the caller gets a real number`);
-    assert.equal(posts('/api/v2/tickets').length, 1, `${platform}: exactly one ticket`);
-    assert.equal(posts('/api/v2/tickets')[0].body.custom_fields[CF.platform], expected,
-      `${platform}: cf_purchased_from must be ${expected}, never Website`);
+    assert.equal(r.status, 200, `${platform}: never a non-200 to the voice agent`);
+    assert.equal(r.body.error, true, `${platform}: must be an honest failure`);
+    assert.equal(r.body.reason, 'unmapped_channel', `${platform}: terminal unmapped_channel`);
+    assert.ok(r.body.spoken_hint, `${platform}: Tara needs something safe to say`);
+    assert.equal(r.body.complaint_number, undefined, `${platform}: no number may be read back`);
+    assert.equal(posts('/api/v2/tickets').length, 0, `${platform}: nothing may be created`);
   }
 });
 

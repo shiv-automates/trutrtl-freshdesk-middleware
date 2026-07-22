@@ -69,6 +69,16 @@ test('⭐ identity gate: forgiving where a real caller is, strict where an impos
   assert.equal(namesMatch('Mrs. Priya', 'priya sharma'), true);     // honorific stripped
   assert.equal(namesMatch('Priya ji', 'Priya Sharma'), true);
 
+  // ⭐ C1: Unicode-aware tokens + ASR-drift tolerance (diagnosis §C1, defects 1 and 10).
+  // A Devanagari name matched itself as `false` before — the headline bug.
+  assert.equal(namesMatch('वसीम', 'वसीम'), true);                    // Hindi script, self-match
+  assert.equal(nameTokens('वसीम').length, 1, 'a Devanagari name is a real token, not []');
+  assert.equal(namesMatch('grus', 'gruz'), true);                   // ASR drift (Soundex/edit-1)
+  assert.equal(namesMatch('DR grus', 'gruz'), true);                // honorific stripped + drift
+  assert.equal(namesMatch('Wasim', 'Waseem'), true);               // transliteration variance
+  // …and the drift tolerance does NOT smear a genuinely different surname into a match.
+  assert.equal(namesMatch('Sharma', 'Verma'), false);
+
   // Not this caller.
   assert.equal(namesMatch('Priya Verma', 'Priya Sharma'), false);   // the surname contradicts
   assert.equal(namesMatch('Priyanka', 'Priya'), false);             // NO prefix matching

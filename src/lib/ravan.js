@@ -60,10 +60,81 @@ export function nameTokens(raw) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ')
     .split(/\s+/)
     .filter(Boolean)
     .filter((t) => !HONORIFICS.has(t));
+}
+
+// ── C1 (2026-07-22): Unicode-aware tokens + fuzzy matching ───────────────────
+//
+// nameTokens() now keeps letters of ANY script plus their combining marks (\p{L}\p{M}\p{N}),
+// so a Devanagari name such as `वसीम` produces a real token instead of being erased to spaces.
+// The old `[^a-z0-9\s]` kept only ASCII, so `nameTokens('वसीम')` returned `[]` and the gate
+// failed even `वसीम` vs `वसीम` — a 100% false-negative on every Hindi-script name (diagnosis
+// §C1, defect 10). `\p{M}` keeps combining vowel signs (matras) attached to their letter.
+//
+// The registration call and the status call are two separate ASR passes, so the SAME spoken
+// name is often transliterated slightly differently each time ("grus" vs "gruz", "DR grus" →
+// the single garbled token 'grus'). Byte-exact subset matching turned every such drift into a
+// refused-own-complaint (diagnosis §C1, defect 1). We add a small confidence tier — a phonetic
+// key plus a length-bounded edit distance — so ASR variants pass while genuinely different
+// names ('verma' vs 'sharma', 'priyanka' vs 'priya') still fail. Loosening here is safe because
+// cross-brand / cross-customer disclosure is closed by isBrandTicket(), enforced independently
+// before formatStatus() ever runs.
+
+/** Classic Soundex — `grus` and `gruz` both key to G620; `verma`(V650) ≠ `sharma`(S650). */
+function soundex(str) {
+  const s = String(str).toLowerCase().replace(/[^a-z]/g, '');
+  if (!s) return '';
+  const code = {
+    b: 1, f: 1, p: 1, v: 1,
+    c: 2, g: 2, j: 2, k: 2, q: 2, s: 2, x: 2, z: 2,
+    d: 3, t: 3, l: 4, m: 5, n: 5, r: 6,
+  };
+  let out = s[0].toUpperCase();
+  let prev = code[s[0]] || 0;
+  for (let i = 1; i < s.length && out.length < 4; i++) {
+    const c = code[s[i]] || 0;
+    if (c !== 0 && c !== prev) out += c;
+    // h and w are transparent (do not reset the adjacency "previous code"); vowels reset it.
+    if (s[i] !== 'h' && s[i] !== 'w') prev = c;
+  }
+  return (out + '000').slice(0, 4);
+}
+
+/** Levenshtein edit distance (two-row, O(n) space). */
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const m = a.length;
+  const n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let curr = new Array(n + 1);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+/**
+ * Two name tokens are "the same person's token" when they are equal, share a phonetic key
+ * (Latin only — Soundex is undefined for other scripts), or are within a tight, length-scaled
+ * edit distance (≤1 for short tokens, ≤2 for longer). The ceiling is deliberately small:
+ * `grus`/`gruz` (d=1) pass; `priyanka`/`priya` (d=3) and `verma`/`sharma` do not.
+ */
+function tokensSimilar(x, y) {
+  if (x === y) return true;
+  const bothLatin = /^[a-z]+$/.test(x) && /^[a-z]+$/.test(y);
+  if (bothLatin && soundex(x) === soundex(y)) return true;
+  const maxDist = Math.min(x.length, y.length) <= 4 ? 1 : 2;
+  return levenshtein(x, y) <= maxDist;
 }
 
 /**
@@ -83,10 +154,12 @@ export function namesMatch(stated, actual) {
   const a = nameTokens(stated);
   const b = nameTokens(actual);
   if (!a.length || !b.length) return false;
-  const A = new Set(a);
-  const B = new Set(b);
-  const subset = (x, y) => [...x].every((t) => y.has(t));
-  return subset(A, B) || subset(B, A);
+  // ⭐ C1: subset matching is now fuzzy per-token (tokensSimilar) rather than byte-exact, so
+  // an ASR-drifted 'grus'/'gruz' passes while 'verma'/'sharma' still fails. Still a subset in
+  // BOTH directions so the shorter side (first name only, partial record) continues to match,
+  // and empty-on-either-side still fails closed above.
+  const subset = (xs, ys) => xs.every((t) => ys.some((u) => tokensSimilar(t, u)));
+  return subset(a, b) || subset(b, a);
 }
 
 /** The requester name on a ticket fetched with include=requester. Never returned to Tara. */
@@ -166,18 +239,27 @@ export function formatStatus(ticket, opts = {}) {
   const status = Number(ticket.status);
   const nameMatches = namesMatch(opts.callerStatedName, requesterName(ticket));
 
+  // ⭐ C1 (2026-07-22): the gate is now PATH-DEPENDENT. On a by-PHONE lookup the caller has
+  // already proven possession of the registered mobile AND isBrandTicket() has independently
+  // proven the ticket is truTRTL's, so phone + brand IS the identity — the route passes
+  // `phoneVerified:true` and the case detail is returned regardless of the name. `name_matches`
+  // is still computed and returned as a SOFT signal. On the by-ID path (no phoneVerified) the
+  // name check remains a HARD gate — a guessed 5-digit number could otherwise land on another
+  // same-brand customer's ticket — but it is now fuzzy + Unicode-aware (see namesMatch/C1).
+  const identityProven = opts.phoneVerified === true || nameMatches;
+
   // ⭐ MINIMAL BODY FIRST. Identity not proved → NOTHING case-specific is ever built
   // into `out`, so nothing case-specific can cross the wire. The gate is enforced by
   // construction, not by prompt discipline: status_label, days_since_registered,
   // expected_next_step, product and latest_update are added ONLY after the gate passes.
-  // A caller who states the wrong name (or no name) learns that a complaint EXISTS
-  // (found:true) and not one describable fact about it.
+  // A caller who fails the gate learns that a complaint EXISTS (found:true) and not one
+  // describable fact about it.
   const out = {
     found: true,
     complaint_number: String(ticket.id),
     name_matches: nameMatches,
   };
-  if (!nameMatches) return out;
+  if (!identityProven) return out;
 
   // Identity proved → add the case detail.
   out.status_label = statusLabel(status);
@@ -204,7 +286,7 @@ export function formatStatus(ticket, opts = {}) {
   // Everything below is INSIDE the gate on purpose. It is the most case-specific
   // material this response has ever carried — the queue, who holds the unit, when it
   // was registered — so it must be unreachable for a caller whose identity we have not
-  // proved. If any of it is ever hoisted above `if (!nameMatches) return out;`, the
+  // proved. If any of it is ever hoisted above `if (!identityProven) return out;`, the
   // gate is broken however green the rest of the suite looks.
 
   // The queue is where the real outcome lives (client's own F/G glossary).

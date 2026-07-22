@@ -106,7 +106,13 @@ complaintStatusRouter.post('/freshdesk/complaint-status', requireBearer, async (
       if (ticket) statusCache.set(cacheKey, ticket);
     }
 
-    const payload = ticket ? formatStatus(ticket, { callerStatedName }) : notFound();
+    // ⭐ C1: a by-PHONE lookup is identity-proven by phone + brand (the caller possesses the
+    // registered mobile and isBrandTicket() has proven the ticket is truTRTL's), so the name
+    // check relaxes to a soft signal there. A by-ID lookup keeps the (now fuzzy) hard gate.
+    const byPhone = !complaintNumber && !!phoneNumber;
+    const payload = ticket
+      ? formatStatus(ticket, { callerStatedName, phoneVerified: byPhone })
+      : notFound();
     logger.info(
       {
         found: payload.found,

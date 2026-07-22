@@ -85,11 +85,12 @@ test('platform-map: unknown NEVER silently becomes Website (§9.1 #8)', () => {
   assert.equal(mapPlatform('some random shop'), null);
   assert.equal(mapPlatform('the corner store'), null);
   assert.equal(mapPlatform('croma'), null);
-  // ⭐ 2026-07-20: Meesho and Jabong are no longer part of this story — the admin added
-  // both to cf_purchased_from, so they map to themselves (see the dedicated test below).
-  // Nothing is currently in the unmapped-channel state.
+  // ⭐ C6 (2026-07-22 client reversal): Meesho and Jabong are recognised channels again but
+  // have NO cf_purchased_from value — they resolve to null (→ terminal unmapped_channel), and
+  // crucially NOT to 'Website' (see the dedicated test below). A real dropdown value maps; an
+  // ordinary unknown does not; a recognised-but-unfilable channel is null yet distinguishable.
   assert.equal(isUnmappedChannel('amazon'), false);
-  assert.equal(isUnmappedChannel('meesho'), false);
+  assert.equal(isUnmappedChannel('meesho'), true);
   assert.equal(isUnmappedChannel('some random shop'), false);
 });
 
@@ -140,55 +141,60 @@ test('⭐ platform-map: every channel on the 2026-07-20 buy list files today', (
   }
 });
 
-test('⭐ platform-map: Meesho and Jabong FILE AS THEMSELVES (dropdown gained them 2026-07-20)', () => {
-  // WHAT CHANGED. Both were treated as terminal `unmapped_channel` failures on the grounds
-  // that cf_purchased_from had no value for them: a Meesho caller got no ticket at all and a
-  // promise of a callback. The desk admin added both on 2026-07-20, so that refusal became
-  // the defect — the same class as filing them as 'Website', pointing the other way. The
-  // legacy 2024–25 Meesho buyer this refusal was written to protect is precisely the caller
-  // it was costing a ticket.
+test('⭐ platform-map: Meesho and Jabong are UNMAPPED CHANNELS again (C6 client reversal 2026-07-22)', () => {
+  // WHAT CHANGED. On 2026-07-20 the desk briefly added Meesho and Jabong to cf_purchased_from
+  // (F-5), so both filed as themselves. The client has now confirmed truTRTL is NOT active on
+  // either channel (C6), reversing that: filing a Meesho/Jabong order is no longer honest, and
+  // the two are removed from the dropdown list + restored to UNMAPPED_CHANNELS. A legacy buyer
+  // who names one is now DECLINED terminally and called back — never misfiled as 'Website'.
   for (const c of ['Meesho', 'meesho', 'MEESHO', 'bought on Meesho', 'ordered it from meesho app']) {
-    assert.equal(mapPlatform(c), 'Meesho', `"${c}" must file as Meesho`);
+    assert.equal(mapPlatform(c), null, `"${c}" must not map to a dropdown value`);
+    assert.equal(isUnmappedChannel(c), true, `"${c}" must be recognised as an unmapped channel`);
   }
   for (const c of ['Jabong', 'jabong', 'bought it on Jabong']) {
-    assert.equal(mapPlatform(c), 'Jabong', `"${c}" must file as Jabong`);
+    assert.equal(mapPlatform(c), null, `"${c}" must not map to a dropdown value`);
+    assert.equal(isUnmappedChannel(c), true, `"${c}" must be recognised as an unmapped channel`);
   }
-  // Both are live dropdown values, so the create cannot 400 on them.
+  // Neither is a live dropdown value any more; the desk admin removes both (see
+  // REQUEST_freshdesk-admin-meesho-jabong.md).
   for (const c of ['Meesho', 'Jabong']) {
-    assert.equal(PLATFORM_CHOICES.includes(c), true, `${c} must be a live cf_purchased_from value`);
+    assert.equal(PLATFORM_CHOICES.includes(c), false, `${c} must NOT be a cf_purchased_from value`);
   }
-  assert.equal(PLATFORM_CHOICES.length, 12, 'the live dropdown has twelve values as of 2026-07-20');
+  assert.equal(PLATFORM_CHOICES.length, 10, 'the live dropdown is back to ten values after the C6 reversal');
 
-  // ⚠ THE ORDERING TRAP, and the reason this assertion is worth more than the two above:
-  // the phrase names a marketplace AND says the word "website". If /website/ were reached
-  // first we would file a Meesho order as a truTRTL.com purchase — §9.1 #8 verbatim (wrong
-  // return policy, wrong invoice requested), which is what the old null-return prevented.
-  assert.equal(mapPlatform('bought it on the meesho website'), 'Meesho');
-  assert.equal(mapPlatform('the jabong website'), 'Jabong');
+  // ⚠ THE ORDERING TRAP — the reason recognising them still matters. The phrase names a
+  // marketplace AND says the word "website"; because UNMAPPED_CHANNELS is checked BEFORE the
+  // /website/ alias, it resolves to null (→ terminal unmapped_channel), NOT to 'Website'. If
+  // /website/ were reached first we would file a Meesho order as a truTRTL.com purchase — §9.1
+  // #8 verbatim (wrong return policy, wrong invoice requested).
+  assert.equal(mapPlatform('bought it on the meesho website'), null);
+  assert.equal(mapPlatform('the jabong website'), null);
   // The Website alias itself is untouched for everyone else.
   assert.equal(mapPlatform('your website'), 'Website');
   assert.equal(mapPlatform('trutrtl.com'), 'Website');
 
-  // Neither is on the buy list Manish gave — they are legacy channels — and that no longer
-  // matters for filing. Recognising a channel the customer really used is not an
-  // endorsement of it; the ticket must say where they actually bought the product.
+  // Neither is on the buy list Manish gave — they are legacy channels — so nothing on the
+  // current buy list is affected by putting them back in the unmapped seam.
   for (const c of ['Meesho', 'Jabong']) {
     assert.equal(
       CURRENT_BUY_LIST.some(([, v]) => v === c), false,
-      `${c} is not on the client's current buy list — it files anyway, for legacy owners`,
+      `${c} is not on the client's current buy list`,
     );
   }
 });
 
-test('⭐ platform-map: the unmapped-channel seam still exists, and is currently empty', () => {
+test('⭐ platform-map: the unmapped-channel seam holds Meesho and Jabong (C6), nothing else', () => {
   // isUnmappedChannel() is what lets the route decline HONESTLY (terminal, callback) rather
   // than dragging an unfilable channel to the nearest legal-looking value — which on this
-  // dropdown is always 'Website'. Nothing is in that state today, but the next channel
-  // truTRTL sells on before the admin adds it will be, and the route, its reason code and
-  // its spoken line must still be wired when that happens.
+  // dropdown is always 'Website'. After the C6 reversal it recognises exactly the two channels
+  // truTRTL is no longer on, and nothing else: a real dropdown value, an ordinary unknown, and
+  // empty input are all NOT unmapped channels.
   assert.equal(typeof isUnmappedChannel, 'function');
-  for (const c of ['Meesho', 'Jabong', 'amazon', 'croma', 'the corner store', '', null, undefined]) {
-    assert.equal(isUnmappedChannel(c), false, `nothing is an unmapped channel today, including ${c}`);
+  for (const c of ['Meesho', 'meesho', 'Jabong', 'jabong', 'bought it on the meesho website']) {
+    assert.equal(isUnmappedChannel(c), true, `${c} must be an unmapped channel (C6)`);
+  }
+  for (const c of ['amazon', 'croma', 'the corner store', '', null, undefined]) {
+    assert.equal(isUnmappedChannel(c), false, `${c} must NOT be an unmapped channel`);
   }
 });
 
@@ -450,16 +456,20 @@ test('⭐ ticket-fields: NO silent fallbacks — it throws instead of fabricatin
     assert.equal(validateComplaint({ product: said, platform: 'amazon' }).code, 'unknown_product');
   }
 
-  // ⭐ 2026-07-20. Meesho / Jabong used to be refused here as `unmapped_channel` because the
-  // dropdown had no value for them. It has both now, so they must BUILD A PAYLOAD — and one
-  // that says Meesho, never 'Website'.
-  for (const [p, expected] of [
-    ['Meesho', 'Meesho'], ['meesho', 'Meesho'], ['bought it on the meesho website', 'Meesho'],
-    ['Jabong', 'Jabong'], ['jabong', 'Jabong'],
-  ]) {
-    assert.equal(validateComplaint({ product: 'ceiling fan', platform: p }).ok, true, `${p} must be filable`);
-    const f = requiredCustomFields({ product: 'ceiling fan', platform: p });
-    assert.equal(f.cf_purchased_from, expected, `${p} → cf_purchased_from`);
+  // ⭐ C6 (2026-07-22 client reversal). Meesho / Jabong are refused here as `unmapped_channel`
+  // again — a real, recognised channel with NO cf_purchased_from value — so they must NOT build
+  // a payload, must NOT throw the generic unknown_platform, and above all must never become
+  // 'Website'. This is a TERMINAL refusal (callback), distinct from the recoverable
+  // unknown_platform below.
+  for (const p of ['Meesho', 'meesho', 'bought it on the meesho website', 'Jabong', 'jabong']) {
+    const v = validateComplaint({ product: 'ceiling fan', platform: p });
+    assert.equal(v.ok, false, `${p} must NOT be filable (client is not on this channel)`);
+    assert.equal(v.code, 'unmapped_channel', `${p} → unmapped_channel (recognised, no value)`);
+    assert.throws(
+      () => requiredCustomFields({ product: 'ceiling fan', platform: p }),
+      (e) => e instanceof TicketFieldError && e.code === 'unmapped_channel',
+      `${p} must throw unmapped_channel, never default to Website`,
+    );
   }
 
   // Any other unmapped platform text: never 'Website'.

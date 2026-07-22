@@ -51,11 +51,27 @@ in the middleware env; see [Function timeouts](#function-timeouts--m-9--r-5) bef
 | `Content-Type` | `application/json` |
 
 ### ⚠ SEQUENCING — read this before wiring it into the prompt
-This function now runs an **identity gate**: it will not disclose status/product/latest-update unless
-you send `caller_stated_name` and it matches the ticket's registered requester. Tara's Phase 6 today
-calls this function at **6.3** (right after confirming the complaint/phone number) and only asks for
-the caller's name at **6.4** — i.e. it calls the tool **before it has a name**. Left as-is, that first
-call now always comes back with `name_matches:false` and no case detail, and Tara has nothing to say.
+
+> ⭐ **C1 UPDATE (2026-07-22, client-approved identity loosening).** The identity gate is now
+> **path-dependent**. On the **by-phone** lookup (`phone_number`, no `complaint_number`), **phone +
+> brand is sufficient identity** — the function returns the **full** case detail even when no name was
+> sent or the stated name doesn't match, because the caller has already proven possession of the
+> registered mobile and `isBrandTicket()` independently guarantees the ticket is truTRTL's. The strict
+> gate below now applies **only to the by-COMPLAINT-NUMBER (by-ID) path**, where a guessed number could
+> otherwise land on another same-brand customer's ticket; there the name check is **kept** but made
+> **fuzzy and Unicode-aware** (so `वसीम`, `grus`/`gruz`, reversed order and honorifics all pass, while
+> `Verma` vs `Sharma` still fails). Net effect: the empty-name early call that used to come back blank
+> on the by-phone path **no longer does** — it returns the answer. Sending `caller_stated_name` when
+> you have it is still good (it sets `name_matches` as a soft signal), just no longer required to hear
+> a by-phone case.
+
+This function runs an **identity gate on the by-ID path**: on a `complaint_number` lookup it will not
+disclose status/product/latest-update unless you send `caller_stated_name` and it (fuzzily) matches the
+ticket's registered requester. Tara's Phase 6 today calls this function at **6.3** (right after
+confirming the complaint/phone number) and only asks for the caller's name at **6.4** — i.e. it calls
+the tool **before it has a name**. On a **by-phone** lookup that ordering is now **fine** — the first
+call returns the case. On a **by-ID** lookup, still send the name on (or before) that call, or call the
+function again once you have it.
 
 **Phase 6 must change to one of:**
 1. Ask for the caller's name **before** calling the function, and send it as `caller_stated_name` on
@@ -82,8 +98,8 @@ read, and does not spend the account's shared ~40 req/min budget. Do not skip th
 {
   "type": "object",
   "properties": {
-    "complaint_number": { "type": "string", "description": "The complaint/ticket number if the customer gives one, e.g. 11914" },
-    "phone_number": { "type": "string", "description": "The customer's phone number, used if no complaint number is given, e.g. +919876543210" },
+    "complaint_number": { "type": "string", "description": "The complaint/ticket number the customer reads out to you. Send exactly the digits they said — never a number from an example, a previous call, or one that merely looks right." },
+    "phone_number": { "type": "string", "description": "The customer's phone number as THEY said it, in +91XXXXXXXXXX or 10-digit form. Never invent or complete a number they did not say." },
     "caller_stated_name": { "type": "string", "description": "The name the caller gave in THIS call, exactly as they said it. Send it every time you have it — the server checks it against the ticket's registered name and returns name_matches. Do not read the registered name out loud to the caller; the server never sends it back." }
   },
   "required": []
@@ -144,7 +160,7 @@ Identity confirmed, **open and past the SLA** — `sla_breached` appears only wh
 |---|---|---|---|
 | `found` | yes | `true` — a truTRTL ticket was resolved and passed the brand filter. | no — it's a branch |
 | `complaint_number` | yes | The Freshdesk ticket id as a string. | digit by digit |
-| `name_matches` | yes | The identity gate's boolean. `false` ⇒ every field below is **absent by construction**. | no — it's a branch |
+| `name_matches` | yes | The name-check boolean. ⭐ **C1:** on the **by-phone** path it is now a **soft signal only** — the case detail is returned regardless of its value (phone + brand is the identity). On the **by-ID** (`complaint_number`) path it is still a hard gate: `false` there ⇒ every field below is **absent by construction**. | no — it's a branch |
 | `status_label` | after gate | One of `registered and open` / `in progress` / `resolved` / `completed and closed`, or `being processed` for an unknown status int. | yes, verbatim |
 | `days_since_registered` | after gate (`null` if the timestamp is unreadable) | Whole calendar days in Asia/Kolkata (same day = `0`). **An integer — for `sla_breached` to be computed server-side, not for Tara to speak.** Say `registered_phrase` instead. | ❌ no |
 | `expected_next_step` | after gate | The safe generic next-step line for the status — **replaced outright** by the SLA line when `sla_breached` is set. | yes, verbatim |
@@ -172,8 +188,10 @@ they match the customer's calendar rather than the server's. Never derive a date
 `cf_*` field names: they are plumbing, and none of them is ever read aloud. (See §*Machine values Tara
 never says aloud*.)
 
-Ticket exists, but the stated name doesn't match (or no name was sent) — **nothing case-specific,
-by design**:
+Ticket exists on a **by-COMPLAINT-NUMBER lookup**, but the stated name doesn't (fuzzily) match, or no
+name was sent — **nothing case-specific, by design**. ⭐ **C1: this shape is now the by-ID path only.**
+On a **by-phone** lookup the same ticket returns its **full** case detail (phone + brand is sufficient
+identity), so a `name_matches:false` there does **not** suppress anything:
 ```json
 { "found": true, "complaint_number": "11914", "name_matches": false }
 ```
@@ -196,6 +214,20 @@ The real requester name is **never** returned in any shape above — only the `n
 ---
 
 ## Function 2 — `register_complaint`
+
+> ⛔⛔ **DO NOT TURN THIS DESCRIPTION BACK INTO A CHECKLIST — READ THIS FIRST (guard-rail, hard-won
+> 2026-07-22).** The `register_complaint` **Description** below MUST stay a **short, positive trigger**
+> — a plain statement of what the tool does and when to call it. A description stuffed with
+> preconditions ("Call this **ONLY** after…", "read them **ALL** back", "confirmed", "**NEVER** reuse",
+> "never substitute…") **suppressed the tool call entirely for days** — Tara silently stopped firing
+> `register_complaint` at all. Making it a clean trigger is what **finally makes the tool fire**.
+> **Do not add `ONLY`, checklists, read-back gates, or `NEVER`/`never` negatives back into this
+> Description (or into Function 1's).** Every bit of "collect the fields first, read the phone back
+> digit by digit, get an explicit yes, never fabricate a value" discipline is real and required — but
+> it lives in **Tara's SYSTEM PROMPT (§12 HARD RULES / Phase 5–6)**, never here. This note exists so a
+> future well-meaning edit doesn't re-break intake by "helpfully" moving that discipline into the tool
+> description.
+
 **Type:** Custom Function → **Custom (Server-Side API)**
 **Method:** `POST`
 **URL:** `<MIDDLEWARE_URL>/freshdesk/register-complaint`
@@ -203,17 +235,13 @@ The real requester name is **never** returned in any shape above — only the `n
 in the middleware env; see [Function timeouts](#function-timeouts--m-9--r-5) before changing either.
 **Headers:** same Authorization + Content-Type as above.
 
-**Description:**
-> Call this ONLY after you have collected — fresh in THIS call — the customer's name, phone, product,
-> platform, and the issue, read them ALL back, and the customer confirmed they're correct. NEVER reuse
-> details from a previous complaint or lookup. **Read the phone number back digit by digit one more
-> time immediately before you call this** — every promise made on this call (the callback, the
-> WhatsApp, the invoice, the video) is delivered to that number and to nothing else. Send `model` when
-> the customer knows which size or variant they have, and `caller_id` — the number the call actually
-> came in from — every time the telephony gives it to you. It returns a complaint number — read it
-> back digit by digit. (The system then automatically WhatsApps the customer exactly what to send.)
-> **If it returns an error instead, there is no complaint number: say so honestly and never substitute
-> a different product or platform to make this function accept the call.**
+**Description** — ⛔ keep this a short positive trigger; see the guard-rail note at the top of this
+section. All "collect first / read the phone back / never fabricate" discipline lives in the SYSTEM
+PROMPT, not here:
+> File a new warranty complaint for a customer's faulty product. Call this once you have the customer's
+> name, phone number, product, platform (where they bought it), and the issue. It returns a complaint
+> number for the customer. Send `model` when the customer names their size or variant, and `caller_id`
+> — the number the call came in from — when the telephony gives it to you.
 
 **Parameters (JSON Schema)** — ⭐ **R-4: `model` and `caller_id` are new, and the `product` enum gains
 `Electric Chopper`** — the real, live `cf_custom_tags` value, confirmed 2026-07-18 now that F-2 is
@@ -240,6 +268,16 @@ and still match Freshdesk's dropdowns **exactly** — do not retype them:
   "required": ["name", "phone_number", "product", "platform", "issue_description"]
 }
 ```
+
+> ⭐ **C6 — the `platform` enum (2026-07-22 client reversal).** `Meesho` and `Jabong` are **deliberately
+> absent** from the `platform` enum above: the client confirmed truTRTL is **not active** on those
+> channels, reversing the earlier **F-5** request that had asked for them to be *added*. The enum already
+> omitted them, so **no enum edit is needed here** — the point is that they stay out. The middleware
+> still **recognises** both (they sit in `UNMAPPED_CHANNELS`) so a legacy buyer who names one is honestly
+> declined via `unmapped_channel` (see the failure table below) rather than misfiled as `Website`, and
+> the desk admin is separately **removing both from the `cf_purchased_from` dropdown** — see
+> [`REQUEST_freshdesk-admin-meesho-jabong.md`](../REQUEST_freshdesk-admin-meesho-jabong.md). Tara must
+> also stop naming them as available channels (prompt speech-guard, C6).
 
 ### ⛔ WHY THE ENUM STRING MATTERS — AND WHAT IT MUST BE NOW THAT F-1/F-2/M-12 ARE DONE
 
@@ -341,7 +379,7 @@ must never read out a number she didn't receive.
 | `unmapped_product` | The product text doesn't match any of the 10 `cf_custom_tags` choices and isn't a recognised-but-unavailable product. | **Recoverable** — ask which product it is, then call again. |
 | `category_unavailable` | The product **is** a real truTRTL product — but it has **no node in the Brand→Category→SKU tree**, so Freshdesk would reject the create. **Five** products hit this today: `Induction`, `Cooker`, `Iron` (in the enum and in `cf_custom_tags`) and `Toaster`, `Water Boiler` (recognised from the caller's words, not dropdown values). ⭐ `Chopper` **left this list 2026-07-18** — F-1/F-2 gave it a real node (`Electric chopper` category / `Electric Chopper` tag) and M-12 mapped it in code, so the brand tree is now **8** categories (was 7) and a chopper is a normal filable product, not a terminal one. | **Terminal** — take a callback. Never file it as a Ceiling Fan or a Mixer Grinder to get a number out. |
 | `unmapped_platform` | The platform text doesn't match the `cf_purchased_from` dropdown and isn't a recognised-but-unmapped channel. There is no "Other" option on this dropdown. | **Recoverable** — ask where they bought it, then call again. |
-| `unmapped_channel` | The platform **is** a real truTRTL sales channel — **`Meesho` and `Jabong`** are on the KB's own "sold on" list — but neither has a value on `cf_purchased_from`. | **Terminal** — take a callback. Never file it as `Website`; that silently changes which return policy applies and which invoice gets asked for. |
+| `unmapped_channel` | The platform is a channel the middleware **recognises by name** but has **no value for** on `cf_purchased_from`. ⭐ **C6 (2026-07-22 client reversal):** `Meesho` and `Jabong` are the two channels here — the client confirmed truTRTL is **not active** on them, reversing the 2026-07-20 F-5 addition that had briefly made them filable. They are kept recognised (restored to `UNMAPPED_CHANNELS`) **only** so a legacy buyer who names one is **honestly declined and called back**, never silently misfiled — and they remain **absent from the `platform` enum**, so Tara can't offer them. | **Terminal** — take a callback. Never file it as `Website`; that silently changes which return policy applies and which invoice gets asked for. |
 | `freshdesk_error` | Anything else — Freshdesk rejected or timed out on the actual create. | **Terminal** — take a callback. |
 
 For `category_unavailable` and `unmapped_channel`, everything the caller gave you (name, callback
