@@ -254,12 +254,21 @@ export function formatStatus(ticket, opts = {}) {
   // expected_next_step, product and latest_update are added ONLY after the gate passes.
   // A caller who fails the gate learns that a complaint EXISTS (found:true) and not one
   // describable fact about it.
+  // ⭐ C1 FIX-2 (2026-07-23): report the DISCLOSURE DECISION, not the raw name check. The agent
+  // keys on `name_matches` to decide whether to speak the case — so on a by-PHONE lookup, where
+  // phone+brand IS the identity, `name_matches` must be TRUE or the agent throws away the detail
+  // the server deliberately included and refuses the caller their own complaint (real defect:
+  // caller "वसीम" whose ticket is stored Latin "Washim" — cross-script, name never matches, but
+  // the phone did). On the by-ID path `identityProven === nameMatches`, so this is unchanged and
+  // still a hard gate. `name_via` records how identity was proven, for logs/debugging only.
   const out = {
     found: true,
     complaint_number: String(ticket.id),
-    name_matches: nameMatches,
+    name_matches: identityProven,
   };
   if (!identityProven) return out;
+  // Past the gate — record how identity was proven (logs/debugging only; not case-specific).
+  out.name_via = opts.phoneVerified === true ? 'phone' : 'name';
 
   // Identity proved → add the case detail.
   out.status_label = statusLabel(status);

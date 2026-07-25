@@ -384,3 +384,29 @@ test('⭐ NONE of the M-4 enrichment escapes the identity gate', () => {
     );
   }
 });
+
+// ── C1 FIX-2 (2026-07-23): by-PHONE must DISCLOSE, and say so, even on a wrong/absent name ──
+// Real defect (issue #38): caller "वसीम" whose ticket requester is stored Latin "Washim" —
+// cross-script, the name can never match — retried by phone and was STILL refused, because the
+// server returned name_matches:false and the agent withholds on false. The by-phone response
+// must report name_matches:TRUE (phone+brand IS the identity) so the agent reads the case out.
+test('⭐ by-phone discloses on phone+brand even when the name is wrong or absent (issue #38)', () => {
+  const t = ticketOf({}, { [config.cf.groupCustom]: 'with Technicians' });
+
+  // Wrong name, but phone-verified → full disclosure, name_matches:true, name_via:'phone'.
+  const wrongName = formatStatus(t, { callerStatedName: 'Totally Different', phoneVerified: true });
+  assert.equal(wrongName.name_matches, true, 'phone-verified must signal disclose=true');
+  assert.equal(wrongName.name_via, 'phone');
+  assert.ok(wrongName.product && wrongName.status_label, 'the case detail must be present');
+
+  // No name at all, phone-verified → still discloses (the वसीम/Washim escape hatch).
+  const noName = formatStatus(t, { phoneVerified: true });
+  assert.equal(noName.name_matches, true);
+  assert.ok(noName.status_label);
+
+  // ⛔ SECURITY UNCHANGED: by-ID path (no phoneVerified) with a wrong name still WITHHOLDS.
+  const byId = formatStatus(t, { callerStatedName: 'Totally Different' });
+  assert.equal(byId.name_matches, false);
+  assert.deepEqual(Object.keys(byId).sort(), ['complaint_number', 'found', 'name_matches']);
+  assert.equal(byId.product, undefined, 'by-id wrong name must leak nothing');
+});

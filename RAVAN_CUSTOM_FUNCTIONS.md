@@ -256,7 +256,11 @@ and still match Freshdesk's dropdowns **exactly** — do not retype them:
     "caller_id":       { "type": "string", "description": "The number this call actually came in FROM (telephony ANI), if the platform gives it to you. Send it whenever you have it, even when it matches what the customer said. Never read it back to the caller and never use it in place of the number they gave you." },
     "product":         { "type": "string", "enum": ["Ceiling Fan","Kettle","Egg boiler","Air fryer","Sandwich Maker","Mixer Grinder","Induction","Cooker","Gas Stove","Iron","Electric Chopper"], "description": "Product category" },
     "model":           { "type": "string", "description": "The size/variant the customer names, as a SHORT token: 1.3, 1.5, digital, manual, 12L, 14egg, 7egg, 3-in-1, grill, toast, smart, wave, ultra, 3jar, 2jar, 3B. Leave it out entirely if they don't know — a wrong token is worse than none. (optional)" },
-    "platform":        { "type": "string", "enum": ["Amazon","Flipkart","Website","Zepto","Blinkit","Myntra","CRED","JioMart","BigBasket","Swiggy"], "description": "Where it was purchased" },
+    // ⭐ Meesho & Jabong STAY in this enum on purpose (C6). truTRTL is no longer on them, so the
+    // middleware DECLINES them (unmapped_channel → honest callback). They are kept here so the agent
+    // RECOGNISES a Meesho/Jabong purchase and lets the server decline it — removing them would force
+    // the agent to pick the nearest value ("Website") and file a WRONG ticket (the silent-Website bug).
+    "platform":        { "type": "string", "enum": ["Amazon","Flipkart","Website","Zepto","Blinkit","Myntra","CRED","JioMart","BigBasket","Swiggy","Meesho","Jabong"], "description": "Where it was purchased" },
     "issue_description":{ "type": "string", "description": "What's wrong with the product" },
     "purchase_date":   { "type": "string", "description": "When they bought it — ISO YYYY-MM-DD if they have the invoice, otherwise their own words ('26 May', 'two months ago'). The server resolves them against the call date. (optional)" },
     "order_id":        { "type": "string", "description": "Marketplace order ID from the invoice (optional)" },
