@@ -84,14 +84,17 @@ Option 2 is cheap: the middleware caches the **ticket**, not the formatted answe
 read, and does not spend the account's shared ~40 req/min budget. Do not skip this — see
 `BACKPORT_2026-07.md` for the full go-live checklist.
 
-**Description (this is what makes Tara call it — keep it precise):**
+**Description (this is what makes Tara call it — keep it a clean positive trigger, not a checklist):**
 > Call this whenever the customer asks for the status or update of an existing complaint or ticket.
-> Pass `complaint_number` if they give one; otherwise pass their `phone_number`. **Always also pass
-> `caller_stated_name` — the name the caller gave you in THIS call, exactly as they said it.** If you
-> don't have their name yet, ask for it first, or call this function again once you do — you may call
-> it twice for the same lookup. Tell the customer to hold for a moment before calling. **If the
-> function returns `name_matches:false`, share nothing case-specific** — no product, no status, no
-> update; offer a callback instead. Only report what this function returns — never invent a status.
+> Pass `complaint_number` if they gave one; otherwise pass their `phone_number` — using only the digits
+> the caller actually said. Pass `caller_stated_name` when the caller has given a name this call; if
+> they haven't given one yet, ask for it first rather than sending a guess. Only report what this
+> function returns — never invent a status, a name, or an identifier.
+
+> ⚠ **Note (2026-07-29):** the word "Always" used to precede `caller_stated_name` here — under garbled
+> audio it pushed the agent to **invent** a name ("Rahul") and a placeholder number (`9876543210`) just
+> to satisfy it. The trigger is now "pass it *when you have it*." The `name_matches:false` → share-nothing
+> branch lives in the system prompt's Status-lookup step, not in this trigger.
 
 **Parameters (JSON Schema):**
 ```json
@@ -408,6 +411,54 @@ is no longer one of those placeholders** (M-7): the caller's own words are resol
 date in Asia/Kolkata, and when nothing resolves the field carries an unmistakable *not captured*
 sentinel — never today's date, which is what used to make a two-year-old fan look bought this morning
 on the one field warranty is assessed from.
+
+---
+
+## Function 3 — `register_warranty`
+
+> ⭐ **NEW 2026-07-29 (Manish, meeting decision).** A caller who wants to **register a warranty**
+> (not report a fault) must NOT go through `register_complaint`. Tara takes **only name + phone**,
+> tells them to drop a "hi" on WhatsApp, and this function drops a **`WARRANTY`-type** ticket into
+> the Warranty group on the same desk. No product/platform/date is asked for. Verified live against
+> `digicart.freshdesk.com` (the `Type` field has a `WARRANTY` value; the create succeeds).
+
+**Type:** Custom Function → **Custom (Server-Side API)**
+**Method:** `POST`
+**URL:** `<MIDDLEWARE_URL>/freshdesk/register-warranty`
+**Timeout:** `12000` ms.
+**Headers:** same Authorization + Content-Type as the other two.
+
+**Description (keep it a short positive trigger, not a checklist):**
+> Register a customer's product warranty when they ask to register/record a warranty (not report a
+> fault). Call this once you have the customer's name and phone number. It returns `ok:true` and no
+> number to read out.
+
+**Parameters (JSON Schema):**
+```json
+{
+  "type": "object",
+  "properties": {
+    "name":         { "type": "string", "description": "Customer's name, as they said it this call." },
+    "phone_number": { "type": "string", "description": "The customer's phone number as THEY said it, +91XXXXXXXXXX or 10-digit. Never invent or complete a number they did not say." },
+    "caller_id":    { "type": "string", "description": "The number the call came in FROM, if the telephony gives it to you (optional)." }
+  },
+  "required": ["name", "phone_number"]
+}
+```
+
+**Execution Message:** leave **blank** (same lesson as `get_complaint_status` — a canned filler can swallow the turn).
+
+**Returns:**
+- Success: `{ "ok": true, "warranty_ref": "12173" }` — ⛔ **`warranty_ref` is an internal ticket id; Tara NEVER reads it out.** She just says the WhatsApp "hi" line.
+- `{ "error": true, "reason": "invalid_phone", "spoken_hint": "…" }` — recoverable: re-take the number digit by digit, call again.
+- `{ "error": true, "reason": "missing_required", "spoken_hint": "…" }` — ask for the name/number, call again.
+- `{ "error": true, "reason": "freshdesk_error", "spoken_hint": "…" }` — terminal: say the hint, promise a WhatsApp/callback.
+
+> ⚠ **Desk reality (for ops, not for Tara):** the desk requires a product on *every* ticket, so a
+> warranty registration carries a **placeholder** product/platform, shouted as placeholders in the
+> subject + description and tagged `warranty_registration`. Safe here because a warranty registration
+> dispatches no technician. The clean fix is an admin rule making the product chain optional for
+> `type=WARRANTY`; then the placeholder can be dropped.
 
 ---
 

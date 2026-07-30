@@ -330,7 +330,10 @@ test('⭐ formatStatus: day 32 must NOT speak like day 2 (defect 20)', () => {
   // The reassurance boilerplate is REPLACED, not appended: never quote "2 to 3 working
   // days" back to a customer who has already waited a month.
   assert.doesNotMatch(stale.expected_next_step, /2 to 3 working days/i);
-  assert.match(stale.expected_next_step, /colleague|callback/i);
+  // No live transfer (2026-07-29 owner decision): worst case is a team callback, never
+  // "put you through to a colleague now".
+  assert.match(stale.expected_next_step, /call you back|callback/i);
+  assert.doesNotMatch(stale.expected_next_step, /put you through|transfer/i);
 
   // A month-old CLOSED complaint is not a breach.
   assert.equal(asPriya(ticketOf({ status: 5, created_at: daysAgo(32) })).sla_breached, undefined);

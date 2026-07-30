@@ -3,6 +3,7 @@ import express from 'express';
 import { logger } from './lib/logger.js';
 import { complaintStatusRouter } from './routes/complaint-status.js';
 import { registerComplaintRouter } from './routes/register-complaint.js';
+import { registerWarrantyRouter } from './routes/register-warranty.js';
 import { afterCallRouter } from './routes/after-call.js';
 
 export function createApp() {
@@ -17,6 +18,7 @@ export function createApp() {
 
   app.use(complaintStatusRouter);
   app.use(registerComplaintRouter);
+  app.use(registerWarrantyRouter);
   app.use(afterCallRouter);
 
   app.use((_req, res) => res.status(404).json({ error: 'not_found' }));

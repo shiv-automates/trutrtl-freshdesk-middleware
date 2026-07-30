@@ -184,10 +184,12 @@ export function closureReason(code, ctx = {}) {
 /** Documented SLA: a technician visit is promised in 2–3 working days; 7 days is generous. */
 export const SLA_OPEN_DAYS = 7;
 
-/** Replaces the reassurance line once the SLA is blown. Acknowledge once, then act. */
+/** Replaces the reassurance line once the SLA is blown. Acknowledge once, then act.
+ *  NOTE (2026-07-29): there is NO live transfer on this line — the "put you through to a
+ *  colleague now" option was removed. Worst case is a team callback, per owner decision. */
 export const SLA_BREACH_NEXT_STEP =
-  'This has taken longer than it should have. I can put you through to a colleague now, '
-  + 'or log a callback so a senior team member takes this up today.';
+  'This has taken longer than it should have. Let me take your name and number '
+  + 'and have a senior team member call you back today to take this forward.';
 
 /** True when an OPEN/PENDING complaint has outlived the SLA. Closed cases never breach. */
 export function isSlaBreached(code, days) {
