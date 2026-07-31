@@ -27,7 +27,7 @@ import { requireBearer } from '../lib/auth.js';
 import * as fd from '../lib/freshdesk.js';
 import { unwrapParams } from '../lib/ravan.js';
 import { requiredCustomFields } from '../lib/ticket-fields.js';
-import { toStorage, tenDigit, isValidIndianMobile } from '../lib/phone.js';
+import { toStorage, tenDigit, isValidIndianMobile, isPlaceholderNumber } from '../lib/phone.js';
 import { normalizeKey } from '../lib/idempotency.js';
 
 export const registerWarrantyRouter = Router();
@@ -159,6 +159,17 @@ registerWarrantyRouter.post('/freshdesk/register-warranty', requireBearer, async
     logger.warn(
       { heard: maskPhone(String(p.phone_number)), digits: tenDigit(p.phone_number).length },
       'register-warranty: refusing — the number as heard is not a valid Indian mobile',
+    );
+    return res.json(fail('invalid_phone'));
+  }
+
+  // ⭐ 2026-07-29. A fabricated placeholder (9876543210 etc.) is format-valid but never a real
+  // caller — the agent reaches for it when it fires the tool BEFORE asking. Refusing it here is
+  // what stopped the duplicate warranty ticket (#12185): a hallucinated call now creates nothing.
+  if (isPlaceholderNumber(p.phone_number)) {
+    logger.warn(
+      { heard: maskPhone(String(p.phone_number)) },
+      'register-warranty: refusing — placeholder/fabricated number, not a real caller',
     );
     return res.json(fail('invalid_phone'));
   }

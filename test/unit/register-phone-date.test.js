@@ -89,7 +89,7 @@ async function register(body, { auth = 'test-secret' } = {}) {
 
 const VALID = {
   name: 'Priya Sharma',
-  phone_number: '9876543210',
+  phone_number: '9812345600',
   product: 'ceiling fan',
   platform: 'Amazon',
   issue_description: 'It stopped spinning after two weeks',
@@ -101,7 +101,8 @@ const VALID = {
 // Each test needs its own phone: the dedup key is phone + category + issue, so reusing one
 // would hand the second test the first test's ticket id and assert nothing.
 let n = 0;
-const freshPhone = () => `98765432${String(10 + (n++)).slice(-2)}`;
+// Not 9876543210 as the first value: that is now a blocked placeholder (isPlaceholderNumber).
+const freshPhone = () => `98181000${String(10 + (n++)).slice(-2)}`;
 
 // ── ⭐ M-2: the number is validated before anything is written ────────────────
 
@@ -148,6 +149,19 @@ test('⭐ invalid_phone is RECOVERABLE — the corrected number files immediatel
   assert.equal(good.body.complaint_number, '12345');
   assert.equal(created().length, 1);
   assert.equal(created()[0].phone, `+91${phone}`);
+});
+
+test('⭐ a fabricated placeholder number (9876543210) files NOTHING', async () => {
+  // 2026-07-29: the warranty call that fired register_warranty with 9876543210 BEFORE asking
+  // the caller anything, creating a junk second ticket (#12185). The number is format-valid,
+  // so it must be caught by name, not by isValidIndianMobile.
+  for (const phone of ['9876543210', '9999999999', '1234567890']) {
+    calls = [];
+    const r = await register({ ...VALID, phone_number: phone, issue_description: `junk ${phone}` });
+    assert.equal(r.body.reason, 'invalid_phone', `${phone}: refused as a fabricated number`);
+    assert.equal(r.body.complaint_number, undefined, `${phone}: no number read back`);
+    assert.equal(created().length, 0, `${phone}: no ticket created`);
+  }
 });
 
 test('a valid number in any spoken/typed shape still files', async () => {

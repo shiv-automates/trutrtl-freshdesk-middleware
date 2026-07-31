@@ -80,7 +80,7 @@ test('⭐ both routes tag a ticket with the SAME config-derived brand tag', asyn
   calls = [];
   const reg = await post('/freshdesk/register-complaint', {
     name: 'Priya Sharma',
-    phone_number: '9876543210',
+    phone_number: '9812345670',
     product: 'ceiling fan',
     platform: 'Amazon',
     issue_description: 'It stopped spinning after two weeks',

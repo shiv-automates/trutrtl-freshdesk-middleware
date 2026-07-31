@@ -67,7 +67,7 @@ import { mapPlatform } from '../lib/platform-map.js';
 import {
   requiredCustomFields, validateComplaint, fieldFallbacks, normalizeOrderDate, TicketFieldError,
 } from '../lib/ticket-fields.js';
-import { toStorage, tenDigit, isValidIndianMobile } from '../lib/phone.js';
+import { toStorage, tenDigit, isValidIndianMobile, isPlaceholderNumber } from '../lib/phone.js';
 import { registerDedup } from '../lib/stores.js';
 import { normalizeKey } from '../lib/idempotency.js';
 import * as whapi from '../lib/whapi.js';
@@ -605,6 +605,17 @@ registerComplaintRouter.post('/freshdesk/register-complaint', requireBearer, asy
     logger.warn(
       { heard: maskPhone(String(p.phone_number)), digits: tenDigit(p.phone_number).length },
       'register-complaint: refusing to file — the number as heard is not a valid Indian mobile',
+    );
+    return res.json(fail('invalid_phone'));
+  }
+
+  // ⭐ 2026-07-29. Same fabricated-placeholder guard as register-warranty: 9876543210 and the
+  // like are format-valid but never a real caller — the agent uses them when it invents a number
+  // instead of asking. A ticket must never be filed against one.
+  if (isPlaceholderNumber(p.phone_number)) {
+    logger.warn(
+      { heard: maskPhone(String(p.phone_number)) },
+      'register-complaint: refusing to file — placeholder/fabricated number, not a real caller',
     );
     return res.json(fail('invalid_phone'));
   }

@@ -2,7 +2,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { clean, tenDigit, variants, toStorage, isValidIndianMobile } from '../../src/lib/phone.js';
+import {
+  clean, tenDigit, variants, toStorage, isValidIndianMobile, isPlaceholderNumber,
+} from '../../src/lib/phone.js';
 import { stripHtml, toOneSentence } from '../../src/lib/html-strip.js';
 import { statusLabel, nextStep, isClosed } from '../../src/lib/status-map.js';
 import { daysSince, daysSincePhrase } from '../../src/lib/time-since.js';
@@ -28,6 +30,19 @@ test('phone: tenDigit + variants + storage', () => {
   assert.equal(clean('+91 (98) 765'), '+9198765');
   assert.equal(isValidIndianMobile('9876543210'), true);
   assert.equal(isValidIndianMobile('1234567890'), false);
+});
+
+test('phone: isPlaceholderNumber catches the numbers an LLM fabricates', () => {
+  // Format-valid, but never a real caller — a WRITE route must refuse these.
+  assert.equal(isPlaceholderNumber('9876543210'), true, 'the classic dummy');
+  assert.equal(isPlaceholderNumber('+91 98765 43210'), true, 'through formatting too');
+  assert.equal(isPlaceholderNumber('9999999999'), true, 'all-same-digit');
+  assert.equal(isPlaceholderNumber('1234567890'), true, 'ascending run');
+  assert.equal(isPlaceholderNumber('0123456789'), true);
+  // Real-looking numbers pass (must NOT be blocked):
+  assert.equal(isPlaceholderNumber('8178490194'), false, 'a genuine caller number');
+  assert.equal(isPlaceholderNumber('9812345678'), false);
+  assert.equal(isPlaceholderNumber(''), false);
 });
 
 test('html-strip: tags, entities, trimming', () => {

@@ -249,13 +249,16 @@ test('⭐ concurrent identical registrations join one create (the in-flight slot
 });
 
 test('⭐ THE #12106/#12107 CASE: a retry that CORRECTED the phone number does not double-file', async () => {
-  // The real sequence. The agent invented 9876543210 / "Amazon" on the first attempt, then
-  // sent the true 8178490194 / "Website" on the retry, so the two attempts keyed differently
-  // and both created a ticket. The telephony caller_id is identical across both — it comes
-  // from the switch, not from the model, which is exactly why it can be trusted here.
+  // The real sequence. The agent mis-heard the number on the first attempt, then sent the
+  // true 8178490194 / "Website" on the retry, so the two attempts keyed differently and both
+  // created a ticket. The telephony caller_id is identical across both — it comes from the
+  // switch, not from the model, which is exactly why it can be trusted here.
+  // (The live incident's first number was literally 9876543210; that exact value is now
+  //  refused by isPlaceholderNumber, so this uses a plausible mis-hear to keep exercising the
+  //  call-identity dedup — the defence for a mis-heard number that ISN'T a known placeholder.)
   const ani = '8178490194';
   const first = await register({
-    ...CALL, phone_number: '9876543210', platform: 'Amazon', model: '3-in-1', caller_id: ani,
+    ...CALL, phone_number: '9818000177', platform: 'Amazon', model: '3-in-1', caller_id: ani,
   });
   assert.match(String(first.body.complaint_number), /^\d+$/);
 
