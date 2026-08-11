@@ -66,6 +66,12 @@ afterCallRouter.post('/ravan/after-call', async (req, res) => {
       dataKeys: req.body && req.body.data ? Object.keys(req.body.data) : null,
       gotPhone: !!call.phone, gotCallId: !!call.callId, gotProduct: !!call.product,
     }, 'after-call received (raw shape)');
+    // TEMP (2026-08 transcript audit): dump the full body, truncated, so we can see the
+    // real caller_number / transcript / summary field shapes Agni actually sends. Remove
+    // once the payload contract is confirmed and the pipeline is wired.
+    try {
+      logger.info({ rawBody: JSON.stringify(req.body).slice(0, 12000) }, 'after-call RAW BODY (temp audit)');
+    } catch { /* body not serialisable — ignore */ }
   }
 
   const dedupKey = call.callId ? `call:${call.callId}` : null;
