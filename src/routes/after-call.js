@@ -25,6 +25,7 @@ import { mapCategory } from '../lib/product-map.js';
 import { isClosed } from '../lib/status-map.js';
 import { toStorage, tenDigit } from '../lib/phone.js';
 import { callDedup } from '../lib/stores.js';
+import { logCallToSheet } from '../lib/call-log.js';
 
 export const afterCallRouter = Router();
 
@@ -66,12 +67,6 @@ afterCallRouter.post('/ravan/after-call', async (req, res) => {
       dataKeys: req.body && req.body.data ? Object.keys(req.body.data) : null,
       gotPhone: !!call.phone, gotCallId: !!call.callId, gotProduct: !!call.product,
     }, 'after-call received (raw shape)');
-    // TEMP (2026-08 transcript audit): dump the full body, truncated, so we can see the
-    // real caller_number / transcript / summary field shapes Agni actually sends. Remove
-    // once the payload contract is confirmed and the pipeline is wired.
-    try {
-      logger.info({ rawBody: JSON.stringify(req.body).slice(0, 12000) }, 'after-call RAW BODY (temp audit)');
-    } catch { /* body not serialisable — ignore */ }
   }
 
   const dedupKey = call.callId ? `call:${call.callId}` : null;
@@ -82,6 +77,11 @@ afterCallRouter.post('/ravan/after-call', async (req, res) => {
 
   // Acknowledge immediately, then do Freshdesk work without blocking the response.
   res.json({ ok: true });
+
+  // ⭐ EVERY call → one row in the call-log Sheet (info-only calls included), so the QA team
+  // reviews calls without listening. Backgrounded + best-effort: independent of the Freshdesk
+  // path below, and a Sheet failure never affects anything. No-op unless CALL_LOG_SHEET_URL is set.
+  logCallToSheet(call, new Date().toISOString()).catch(() => {});
 
   try {
     let ticketId = null;
@@ -104,10 +104,13 @@ afterCallRouter.post('/ravan/after-call', async (req, res) => {
       call.callId ? `Call ID: ${call.callId}` : '',
       call.durationSec ? `Duration: ${call.durationSec}s` : '',
       `Sentiment: ${call.sentiment}`,
+      call.disconnectReason ? `Ended: ${call.disconnectReason}` : '',
       call.disposition ? `Disposition: ${call.disposition}` : '',
+      call.resolution ? `Resolution given: ${call.resolution}` : '',
+      (call.actionToTake || call.nextSteps) ? `Action to take: ${call.actionToTake || call.nextSteps}` : '',
+      call.callbackNeeded != null ? `Callback needed: ${call.callbackNeeded}` : '',
       '',
       `Summary: ${call.summary || '(none provided)'}`,
-      call.nextSteps ? `Next steps: ${call.nextSteps}` : '',
       call.recordingUrl ? `Recording: ${call.recordingUrl}` : '',
       transcript ? `\nTranscript:\n${transcript}` : '',
     ].filter(Boolean).join('\n');

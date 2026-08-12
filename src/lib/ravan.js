@@ -362,45 +362,81 @@ export const notFound = () => ({ found: false });
 
 const firstOf = (...vals) => vals.find((v) => v != null && v !== '');
 
-/** Pull the fields we care about out of Ravan's (loosely-known) after-call payload. */
+/**
+ * Pull the fields we care about out of Agni's after-call payload.
+ *
+ * ⭐ 2026-08 — VERIFIED against a REAL captured payload (the docs are wrong). Agni's actual
+ * `call_completed` webhook is NOT `{data:{…}}`; it is:
+ *   { agent_name, call_type, event:"call_completed",
+ *     call_session: { id, caller_number, callee_number, duration_sec, disconnect_reason,
+ *                     recording_url, status, started_at, ended_at, post_call_analysis_result },
+ *     post_call_analysis: { summary:{type,value}, sentiments:{type,value}, first_name:{…}, … },
+ *     transcriptions: "truTRTL: …\n: user line\n…"  ← a STRING, not an array }
+ * So: caller number is `call_session.caller_number` (INBOUND = the customer; `callee_number` is
+ * truTRTL's own line — never use it), the transcript is the top-level `transcriptions` STRING,
+ * and post-call fields are nested `{type,value}`. We still accept the documented shape as a
+ * fallback so a future Agni change back to `data.*` doesn't silently blind us again.
+ */
 export function parseAfterCall(body) {
   const b = body || {};
-  const d = b.data && typeof b.data === 'object' ? b.data : b;
-  const pca = d.post_call_analysis || d.analysis || {};
+  const s = (b.call_session && typeof b.call_session === 'object') ? b.call_session
+    : (b.data && typeof b.data === 'object') ? b.data
+      : b;
+  const pcaRaw = b.post_call_analysis || s.post_call_analysis_result || s.post_call_analysis
+    || s.analysis || {};
+  // Real shape nests each field as {type, value}; docs shape is flat. Unwrap either.
+  const pcaVal = (k) => {
+    const v = pcaRaw[k];
+    if (v == null) return undefined;
+    return (typeof v === 'object' && 'value' in v) ? v.value : v;
+  };
 
-  const transcripts = Array.isArray(d.transcripts)
-    ? d.transcripts
-    : Array.isArray(d.transcript)
-      ? d.transcript
-      : [];
+  // Transcript: real shape = a STRING at body.transcriptions; docs shape = an array. Keep whichever.
+  const transcripts = Array.isArray(s.transcripts) ? s.transcripts
+    : Array.isArray(s.transcript) ? s.transcript
+      : Array.isArray(b.transcripts) ? b.transcripts
+        : (typeof b.transcriptions === 'string' ? b.transcriptions
+          : typeof s.transcriptions === 'string' ? s.transcriptions
+            : []);
 
-  const cust = d.customer || b.customer || {};
+  const cust = s.customer || b.customer || {};
+  const nameFromPca = [pcaVal('first_name'), pcaVal('last_name')].filter(Boolean).join(' ').trim();
   return {
-    callId: firstOf(d.call_session_id, d.call_id, d.callId, d.session_id, d.sessionId,
-      d.conversation_id, d.conversationId, d.id, b.call_session_id, b.call_id, b.id) || null,
-    phone: firstOf(d.phone, d.phone_number, d.caller_number, d.callerNumber, d.from, d.from_number,
-      d.fromNumber, d.customer_number, d.customerNumber, d.customer_phone, d.mobile,
-      cust.number, cust.phone, cust.phone_number, b.from, b.phone, b.phone_number, b.caller_number) || null,
-    callerName: firstOf(d.caller_name, d.callerName, d.customer_name, d.name, cust.name, b.caller_name) || null,
-    // product/platform: only ever an EXPLICIT field Ravan sends. We never infer them
-    // from the summary or transcript — a guess here becomes a fabricated CRM field on
-    // a real ticket (the whole point of dossier §9.1 🔴 #2). Absent ⇒ null ⇒ after-call
-    // refuses to create a ticket rather than invent a product.
-    product: firstOf(d.product, d.product_name, d.productName, pca.product, b.product) || null,
-    platform: firstOf(d.platform, d.purchased_from, d.purchasedFrom, pca.platform, b.platform) || null,
-    summary: firstOf(d.summary, pca.summary, b.summary) || '',
-    sentiment: firstOf(pca.sentiment, d.sentiment, b.sentiment) || 'neutral',
-    disposition: firstOf(pca.disposition, d.disposition) || null,
-    nextSteps: firstOf(pca.next_steps, d.next_steps) || null,
-    recordingUrl: firstOf(d.recording_url, d.recording, b.recording_url) || null,
-    durationSec: firstOf(d.duration_sec, d.duration) || null,
-    status: firstOf(d.status, b.status) || null,
-    transcripts,
+    callId: firstOf(s.id, s.call_session_id, s.call_id, s.callId, s.session_id, s.conversation_id,
+      b.call_session_id, b.call_id, b.id) || null,
+    // ⭐ INBOUND: caller_number = the customer. callee_number = truTRTL's own Plivo line — NEVER
+    // file a ticket against it. That mix-up (reading `phone`, which was the callee) is exactly
+    // why every after-call came back "no phone".
+    phone: firstOf(s.caller_number, s.callerNumber, s.phone, s.phone_number, s.from, s.from_number,
+      s.customer_number, s.mobile, cust.number, cust.phone, b.caller_number, b.phone) || null,
+    callerName: firstOf(s.caller_name, s.callerName, s.customer_name, nameFromPca || null, cust.name) || null,
+    // product/platform: only ever an EXPLICIT field Agni extracts. Never inferred from the
+    // summary/transcript — a guess becomes a fabricated CRM field on a real ticket.
+    product: firstOf(s.product, pcaVal('product'), b.product) || null,
+    platform: firstOf(s.platform, s.purchased_from, pcaVal('platform'), b.platform) || null,
+    summary: firstOf(pcaVal('summary'), s.summary, b.summary) || '',
+    sentiment: firstOf(pcaVal('sentiments'), pcaVal('sentiment'), s.sentiment) || 'neutral',
+    // Custom Post-Call Data Extraction fields (configured in Agni) land here when present.
+    disposition: firstOf(pcaVal('disposition'), pcaVal('call_outcome'), s.disposition) || null,
+    resolution: firstOf(pcaVal('resolution'), pcaVal('resolution_given')) || null,
+    actionToTake: firstOf(pcaVal('action_to_take'), pcaVal('action'), pcaVal('next_steps')) || null,
+    callbackNeeded: firstOf(pcaVal('callback_needed'), pcaVal('callback_required')) ?? null,
+    nextSteps: firstOf(pcaVal('next_steps'), pcaVal('action_to_take'), s.next_steps) || null,
+    recordingUrl: firstOf(s.recording_url, s.recording, b.recording_url) || null,
+    durationSec: firstOf(s.duration_sec, s.duration) || null,
+    status: firstOf(s.status, b.status) || null,
+    disconnectReason: firstOf(s.disconnect_reason, b.disconnect_reason) || null,
+    transcripts, // a STRING or an array — renderTranscript() handles both
   };
 }
 
-/** Render a transcript array into a compact text block, capped in length. */
+/** Render a transcript (Agni sends a STRING; the docs shape is an array) into a capped block. */
 export function renderTranscript(transcripts, maxChars = 2500) {
+  // ⭐ Real Agni shape: `transcriptions` is already a formatted "SPEAKER: line\n…" string.
+  if (typeof transcripts === 'string') {
+    const s = transcripts.trim();
+    return s.length > maxChars ? `${s.slice(0, maxChars)}\n…(truncated)` : s;
+  }
   if (!Array.isArray(transcripts) || !transcripts.length) return '';
   const lines = [];
   for (const t of transcripts) {
